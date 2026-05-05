@@ -90,20 +90,37 @@ def api_get(endpoint, params=None):
 
 @st.cache_data(ttl=900)
 def get_fixtures_for_league(league_id, season):
+    """
+    Free plan de api-sports.io NO permite el param 'next'.
+    Estrategias permitidas en Free:
+      - by fixture id
+      - by date (from/to)
+      - live
+    Usamos from/to con ventana de 30 dias.
+    """
     today  = datetime.now().strftime("%Y-%m-%d")
-    future = (datetime.now() + timedelta(days=21)).strftime("%Y-%m-%d")
-    for params in [
-        {"league": league_id, "season": season, "status": "NS", "next": 20},
+    future = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    past7  = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    strategies = [
+        # Proximos 30 dias (funciona en Free)
         {"league": league_id, "season": season, "from": today, "to": future},
-        {"league": league_id, "season": season, "next": 20},
-    ]:
+        # Ultimos 7 dias + proximos (por si hay retrasos de calendario)
+        {"league": league_id, "season": season, "from": past7,  "to": future},
+        # Solo por liga y season sin filtro de fecha
+        {"league": league_id, "season": season},
+    ]
+
+    for params in strategies:
         data = api_get("fixtures", params)
         if data:
             matches = []
             for f in data:
                 fix   = f.get("fixture", {})
                 teams = f.get("teams",   {})
-                if fix.get("status", {}).get("short","") in ("FT","AET","PEN","CANC","ABD","PST"):
+                status = fix.get("status", {}).get("short", "")
+                # Skip finished or cancelled
+                if status in ("FT","AET","PEN","CANC","ABD","PST","WO","AWD"):
                     continue
                 matches.append({
                     "id":      fix.get("id"),
@@ -320,12 +337,27 @@ with st.spinner("Buscando partidos próximos..."):
 
 if not fixtures:
     st.warning(f"No se encontraron partidos próximos para **{league_name}**.")
-    st.info("Prueba otra liga o verifica tu API Key.")
+    st.info("""💡 **Posibles causas:**
+- El plan Free de api-sports.io tiene acceso limitado a ligas. Las que funcionan en Free son principalmente: **Premier League, La Liga, Serie A, Bundesliga, Ligue 1, Champions League**.
+- La temporada puede haber terminado — prueba cambiar la temporada.
+- Revisa que tu key tenga requests disponibles (botón 🔍 en el sidebar).
+""")
     with st.expander("🛠️ Respuesta cruda de la API"):
         try:
+            today_d = datetime.now().strftime("%Y-%m-%d")
+            fut_d   = (datetime.now()+timedelta(days=30)).strftime("%Y-%m-%d")
             r = requests.get(f"{BASE_URL}/fixtures", headers=get_headers(),
-                             params={"league":lg["id"],"season":lg["season"],"next":5}, timeout=15)
-            st.code(f"HTTP {r.status_code}\n\n{json.dumps(r.json(),indent=2)[:2000]}", language="json")
+                             params={"league": lg["id"], "season": lg["season"],
+                                     "from": today_d, "to": fut_d}, timeout=15)
+            d = r.json()
+            err = d.get("errors",{})
+            if err and err != [] and err != {}:
+                st.error(f"Error de API: {err}")
+                st.markdown("**Posibles causas:**")
+                st.markdown("- Plan Free no permite este endpoint con estos parametros")
+                st.markdown("- Temporada incorrecta para esta liga")
+                st.markdown("- Limite de requests diarios alcanzado")
+            st.code(f"HTTP {r.status_code}\n\n{json.dumps(d,indent=2)[:2000]}", language="json")
         except Exception as e: st.error(str(e))
     st.stop()
 
