@@ -13,7 +13,7 @@ import json
 # ─────────────────────────────────────────────────────────────
 #  🔑  PEGA TU API KEY AQUÍ  (de dashboard.api-sports.io)
 # ─────────────────────────────────────────────────────────────
-API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"
+API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"   # ← pega aquí tu key de api-sports.io
 BASE_URL = "https://v3.football.api-sports.io"
 # ─────────────────────────────────────────────────────────────
 
@@ -165,35 +165,42 @@ def get_leagues():
 
 @st.cache_data(ttl=1800)
 def get_fixtures(league_id, season=None):
-    # Auto-detect season: try current year first, then fallback
-    from datetime import datetime
+    from datetime import datetime, timedelta
     current_year = datetime.now().year
-    seasons_to_try = [current_year, current_year - 1]
-    if season:
-        seasons_to_try = [season]
+    today = datetime.now().strftime("%Y-%m-%d")
+    future = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+
+    # Seasons to try: current and previous year
+    seasons_to_try = [season] if season else [current_year, current_year - 1]
 
     for s in seasons_to_try:
-        # First try upcoming (NS = Not Started)
+        # Strategy 1: next N fixtures (not started)
         data = api_get("fixtures", {"league": league_id, "season": s, "status": "NS", "next": 20})
+        
+        # Strategy 2: by date range
         if not data:
-            # Also try next 30 days regardless of status
-            data = api_get("fixtures", {"league": league_id, "season": s, "next": 30})
+            data = api_get("fixtures", {"league": league_id, "season": s, "from": today, "to": future})
+        
+        # Strategy 3: just next without status filter
+        if not data:
+            data = api_get("fixtures", {"league": league_id, "season": s, "next": 20})
+
         if data:
             matches = []
             for f in data:
-                fix = f.get("fixture", {})
-                teams = f.get("teams", {})
-                status = f.get("fixture", {}).get("status", {}).get("short", "")
-                if status in ("FT", "AET", "PEN"):
-                    continue  # skip finished games
+                fix   = f.get("fixture", {})
+                teams = f.get("teams",   {})
+                st_short = fix.get("status", {}).get("short", "")
+                if st_short in ("FT", "AET", "PEN", "CANC", "ABD"):
+                    continue
                 matches.append({
-                    "id": fix.get("id"),
-                    "date": fix.get("date", "")[:10],
-                    "home": teams.get("home", {}).get("name", "?"),
-                    "away": teams.get("away", {}).get("name", "?"),
+                    "id":      fix.get("id"),
+                    "date":    fix.get("date", "")[:10],
+                    "home":    teams.get("home", {}).get("name", "?"),
+                    "away":    teams.get("away", {}).get("name", "?"),
                     "home_id": teams.get("home", {}).get("id"),
                     "away_id": teams.get("away", {}).get("id"),
-                    "season": s,
+                    "season":  s,
                     "display": f"{fix.get('date','')[:10]}  |  {teams.get('home',{}).get('name','?')}  vs  {teams.get('away',{}).get('name','?')}",
                 })
             if matches:
@@ -438,13 +445,63 @@ with st.sidebar:
     st.markdown("**Sims:** 10,000")
     from datetime import datetime
     st.markdown(f"**Temporada:** {datetime.now().year}")
+    st.markdown("---")
+    debug_mode = st.checkbox("🛠️ Modo Diagnóstico", value=False)
 
 # ── Step 1: Choose league ─────────────────────────────────────
 section("① ELIGE LA LIGA")
 
 if API_KEY == "TU_API_KEY_AQUI":
     st.warning("⚠️ Pega tu API Key de api-sports.io en el sidebar (ícono ≡) o en el código (línea 15).")
+    debug_mode = False
     st.stop()
+
+# ── DIAGNOSTIC MODE ──────────────────────────────────────────
+if debug_mode:
+    section("🛠️ DIAGNÓSTICO DE API")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("🔍 Test conexión API"):
+            with st.spinner("Probando..."):
+                try:
+                    r = requests.get(f"{BASE_URL}/status", headers=HEADERS, timeout=10)
+                    st.code(f"Status HTTP: {r.status_code}\n\n{json.dumps(r.json(), indent=2)[:800]}", language="json")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+    
+    with col2:
+        if st.button("📋 Ver ligas raw"):
+            with st.spinner("Consultando..."):
+                try:
+                    r = requests.get(f"{BASE_URL}/leagues", headers=HEADERS, 
+                                    params={"current": "true"}, timeout=15)
+                    data = r.json()
+                    st.code(f"HTTP {r.status_code}\nTotal: {data.get('results',0)} ligas\n\nPrimeras 3:\n{json.dumps(data.get('response',[])[:3], indent=2)[:1000]}", language="json")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+    
+    test_league = st.number_input("ID de liga a testear (Premier League=39, LaLiga=140)", value=39, step=1)
+    test_season = st.number_input("Temporada a testear", value=2024, step=1)
+    
+    if st.button("⚽ Ver partidos de esta liga/temporada"):
+        with st.spinner("Consultando fixtures..."):
+            try:
+                r = requests.get(f"{BASE_URL}/fixtures", headers=HEADERS,
+                                params={"league": int(test_league), "season": int(test_season), "next": 5}, timeout=15)
+                data = r.json()
+                st.code(f"HTTP {r.status_code}\nResultados: {data.get('results',0)}\n\nPrimero:\n{json.dumps(data.get('response',[])[:2], indent=2)[:1200]}", language="json")
+                
+                # Also show account info
+                r2 = requests.get(f"{BASE_URL}/status", headers=HEADERS, timeout=10)
+                acct = r2.json().get("response", {}).get("account", {})
+                sub = r2.json().get("response", {}).get("subscription", {})
+                st.info(f"**Cuenta:** {acct.get('email','?')} | **Plan:** {sub.get('plan','?')} | **Activa:** {sub.get('active','?')}")
+            except Exception as e:
+                st.error(f"Error: {e}")
+    
+    st.divider()
 
 with st.spinner("Cargando ligas disponibles..."):
     leagues = get_leagues()
