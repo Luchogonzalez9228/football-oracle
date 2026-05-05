@@ -8,14 +8,18 @@ import json
 # ─────────────────────────────────────────────────────────────
 #  🔑  PEGA TU API KEY AQUÍ  (de dashboard.api-sports.io)
 # ─────────────────────────────────────────────────────────────
-API_KEY  = "70cb24441a57cc0a28c2fd7dd3b76110"
+API_KEY  = "70cb24441a57cc0a28c2fd7dd3b76110"  # No escribas tu key aqui. Usala desde el sidebar o Streamlit Secrets
 BASE_URL = "https://v3.football.api-sports.io"
 # ─────────────────────────────────────────────────────────────
 
 N_SIMULATIONS = 10_000
 
 def get_headers():
-    return {"x-apisports-key": st.session_state.get("api_key", API_KEY)}
+    # Try: 1) sidebar input, 2) Streamlit Secrets, 3) hardcoded fallback
+    key = (st.session_state.get("api_key") or
+           st.secrets.get("API_KEY", "") if hasattr(st, "secrets") else "" or
+           API_KEY)
+    return {"x-apisports-key": key}
 
 st.set_page_config(page_title="Football Oracle", page_icon="⚽", layout="wide", initial_sidebar_state="expanded")
 
@@ -52,22 +56,22 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
 """, unsafe_allow_html=True)
 
 POPULAR_LEAGUES = {
-    "🏴󠁧󠁢󠁥󠁮󠁧󠁿 England — Premier League":  {"id":39,  "season":2024},
-    "🇪🇸 Spain — La Liga":              {"id":140, "season":2024},
-    "🇩🇪 Germany — Bundesliga":         {"id":78,  "season":2024},
-    "🇮🇹 Italy — Serie A":              {"id":135, "season":2024},
-    "🇫🇷 France — Ligue 1":             {"id":61,  "season":2024},
-    "🇵🇹 Portugal — Primeira Liga":      {"id":94,  "season":2024},
-    "🇳🇱 Netherlands — Eredivisie":      {"id":88,  "season":2024},
-    "🇹🇷 Turkey — Süper Lig":           {"id":203, "season":2024},
-    "🇸🇦 Saudi Arabia — Pro League":     {"id":307, "season":2024},
-    "🇲🇽 Mexico — Liga MX":             {"id":262, "season":2024},
-    "🇧🇷 Brazil — Série A":              {"id":71,  "season":2025},
-    "🇦🇷 Argentina — Liga Profesional":  {"id":128, "season":2024},
-    "🇨🇴 Colombia — Liga BetPlay":       {"id":239, "season":2025},
-    "🇺🇸 USA — MLS":                    {"id":253, "season":2025},
-    "🏆 UEFA Champions League":         {"id":2,   "season":2024},
-    "🏆 UEFA Europa League":            {"id":3,   "season":2024},
+    "ENG England — Premier League":  {"id":39,  "season":2024},
+    "ESP Spain — La Liga":              {"id":140, "season":2024},
+    "GER Germany — Bundesliga":         {"id":78,  "season":2024},
+    "ITA Italy — Serie A":              {"id":135, "season":2024},
+    "FRA France — Ligue 1":             {"id":61,  "season":2024},
+    "POR Portugal — Primeira Liga":      {"id":94,  "season":2024},
+    "NED Netherlands — Eredivisie":      {"id":88,  "season":2024},
+    "TUR Turkey — Süper Lig":           {"id":203, "season":2024},
+    "KSA Saudi Arabia — Pro League":     {"id":307, "season":2024},
+    "MEX Mexico — Liga MX":             {"id":262, "season":2024},
+    "BRA Brazil — Série A":              {"id":71,  "season":2025},
+    "ARG Argentina — Liga Profesional":  {"id":128, "season":2024},
+    "COL Colombia — Liga BetPlay":       {"id":239, "season":2025},
+    "USA — MLS":                    {"id":253, "season":2025},
+    "UCL UEFA Champions League":         {"id":2,   "season":2024},
+    "UEL UEFA Europa League":            {"id":3,   "season":2024},
 }
 
 def api_get(endpoint, params=None):
@@ -301,7 +305,8 @@ with st.sidebar:
 # ── MAIN ──────────────────────────────────────────────────────
 st.markdown('<div class="hero"><h1>⚽ FOOTBALL ORACLE</h1><p>Monte Carlo · 10,000 Simulaciones · Sistema de Confiabilidad por Mercado</p></div>', unsafe_allow_html=True)
 
-if not st.session_state.get("api_key") or st.session_state.get("api_key") == "TU_API_KEY_AQUI":
+active_key = (st.session_state.get("api_key") or (st.secrets.get("API_KEY","") if hasattr(st,"secrets") else ""))
+if not active_key:
     st.warning("⚠️ Abre el sidebar (≡) y pega tu API Key para comenzar.")
     st.stop()
 
