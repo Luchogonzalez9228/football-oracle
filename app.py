@@ -1,668 +1,426 @@
-# ============================================================
-#  ⚽  FOOTBALL ORACLE  —  Pronósticos Automáticos de Fútbol
-#  Científico de Datos Senior | Monte Carlo 10,000 sims
-# ============================================================
-
 import streamlit as st
 import requests
 import numpy as np
 import pandas as pd
-from scipy import stats
+from datetime import datetime, timedelta
 import json
 
 # ─────────────────────────────────────────────────────────────
 #  🔑  PEGA TU API KEY AQUÍ  (de dashboard.api-sports.io)
 # ─────────────────────────────────────────────────────────────
-API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"   # ← pega aquí tu key de api-sports.io
+API_KEY  = "70cb24441a57cc0a28c2fd7dd3b76110"
 BASE_URL = "https://v3.football.api-sports.io"
 # ─────────────────────────────────────────────────────────────
 
-HEADERS = {"x-apisports-key": API_KEY}
 N_SIMULATIONS = 10_000
 
-# ── Page config ───────────────────────────────────────────────
-st.set_page_config(
-    page_title="Football Oracle",
-    page_icon="⚽",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+def get_headers():
+    return {"x-apisports-key": st.session_state.get("api_key", API_KEY)}
 
-# ── CSS ───────────────────────────────────────────────────────
+st.set_page_config(page_title="Football Oracle", page_icon="⚽", layout="wide", initial_sidebar_state="expanded")
+
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;700&display=swap');
-
-  html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
-
-  .stApp { background: #080810; color: #e8e8ee; }
-
-  /* Hero banner */
-  .hero {
-    background: linear-gradient(135deg, #0f0f1a 0%, #1a0a0a 100%);
-    border: 1px solid #2a2a3a;
-    border-radius: 16px;
-    padding: 28px 32px 20px;
-    margin-bottom: 24px;
-    position: relative;
-    overflow: hidden;
-  }
-  .hero::before {
-    content: '';
-    position: absolute; top:-60px; right:-60px;
-    width:260px; height:260px;
-    background: radial-gradient(circle, rgba(244,98,42,0.15) 0%, transparent 70%);
-  }
-  .hero h1 {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 3rem; color: #f4622a; margin: 0; letter-spacing: 2px;
-  }
-  .hero p { color: #7070a0; font-size: 0.85rem; margin: 4px 0 0; }
-
-  /* Metric cards */
-  .metric-card {
-    background: #13131f; border: 1px solid #2a2a3a;
-    border-radius: 12px; padding: 16px 18px; text-align: center;
-  }
-  .metric-val { font-family: 'Bebas Neue', sans-serif; font-size: 2.2rem; color: #f5c842; }
-  .metric-lbl { font-size: 0.7rem; color: #555568; letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
-
-  /* Prob bar */
-  .prob-row { margin: 8px 0; }
-  .prob-label { font-size: 0.8rem; color: #9090b0; margin-bottom: 3px; }
-  .prob-bar-bg { background: #1e1e2e; border-radius: 99px; height: 10px; overflow: hidden; }
-  .prob-bar-fill { height: 100%; border-radius: 99px; }
-
-  /* Section titles */
-  .sec-title {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 1.4rem; color: #f4622a; letter-spacing: 2px;
-    border-bottom: 1px solid #2a2a3a; padding-bottom: 6px; margin: 20px 0 14px;
-  }
-
-  /* Team vs display */
-  .matchup {
-    background: #13131f; border: 1px solid #2a2a3a; border-radius: 14px;
-    padding: 20px; text-align: center; margin-bottom: 20px;
-  }
-  .team-name { font-family: 'Bebas Neue', sans-serif; font-size: 1.8rem; color: #e8e8ee; }
-  .vs-badge  { font-family: 'Bebas Neue', sans-serif; font-size: 2.5rem; color: #f4622a; }
-
-  /* Result badge */
-  .result-badge {
-    display: inline-block;
-    padding: 6px 18px; border-radius: 8px;
-    font-weight: 700; font-size: 0.9rem; letter-spacing: 1px;
-  }
-  .win  { background: rgba(62,207,142,0.15); color: #3ecf8e; }
-  .draw { background: rgba(245,200,66,0.12); color: #f5c842; }
-  .lose { background: rgba(244,98,42,0.12);  color: #f4622a; }
-
-  /* Tables */
-  .styled-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  .styled-table th {
-    background: #1e1e2e; color: #555568;
-    font-size: 0.7rem; letter-spacing: 2px; text-transform: uppercase;
-    padding: 8px 12px; text-align: left;
-  }
-  .styled-table td { padding: 8px 12px; color: #c0c0d8; border-bottom: 1px solid #1e1e2e; }
-  .styled-table tr:hover td { background: #16162a; }
-
-  /* Buttons */
-  .stButton > button {
-    background: #f4622a !important; color: white !important;
-    border: none !important; border-radius: 10px !important;
-    font-weight: 700 !important; font-size: 1rem !important;
-    padding: 12px 24px !important; width: 100% !important;
-    letter-spacing: 1px !important;
-  }
-  .stButton > button:hover { background: #c04a1e !important; }
-
-  /* Selectbox / inputs */
-  .stSelectbox label, .stTextInput label { color: #9090b0 !important; font-size: 0.8rem !important; }
-
-  /* Spinner */
-  .stSpinner > div { border-top-color: #f4622a !important; }
-
-  /* Alert */
-  .stAlert { border-radius: 10px !important; }
-
-  /* Hide streamlit branding */
-  #MainMenu, footer, header { visibility: hidden; }
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;700&display=swap');
+html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
+.stApp{background:#080810;color:#e8e8ee;}
+.hero{background:linear-gradient(135deg,#0f0f1a,#1a0a0a);border:1px solid #2a2a3a;border-radius:16px;padding:28px 32px 20px;margin-bottom:24px;}
+.hero h1{font-family:'Bebas Neue',sans-serif;font-size:3rem;color:#f4622a;margin:0;letter-spacing:2px;}
+.hero p{color:#7070a0;font-size:.85rem;margin:4px 0 0;}
+.metric-card{background:#13131f;border:1px solid #2a2a3a;border-radius:12px;padding:16px 18px;text-align:center;margin-bottom:8px;}
+.metric-val{font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:#f5c842;}
+.metric-lbl{font-size:.7rem;color:#555568;letter-spacing:2px;text-transform:uppercase;margin-top:2px;}
+.sec-title{font-family:'Bebas Neue',sans-serif;font-size:1.4rem;color:#f4622a;letter-spacing:2px;border-bottom:1px solid #2a2a3a;padding-bottom:6px;margin:20px 0 14px;}
+.matchup{background:#13131f;border:1px solid #2a2a3a;border-radius:14px;padding:20px;text-align:center;margin-bottom:20px;}
+.team-name{font-family:'Bebas Neue',sans-serif;font-size:1.8rem;color:#e8e8ee;}
+.vs-badge{font-family:'Bebas Neue',sans-serif;font-size:2.5rem;color:#f4622a;}
+.pred-card{background:#13131f;border:1px solid #2a2a3a;border-radius:12px;padding:16px 20px;margin-bottom:10px;}
+.pred-card-low{background:#1a0d0d;border:1px solid #f4622a55;border-radius:12px;padding:16px 20px;margin-bottom:10px;}
+.pred-card-med{background:#13130a;border:1px solid #f5c84244;border-radius:12px;padding:16px 20px;margin-bottom:10px;}
+.pred-market{font-size:.7rem;color:#555568;letter-spacing:2px;text-transform:uppercase;}
+.pred-pick{font-weight:700;font-size:.95rem;margin:4px 0;}
+.pred-detail{font-size:.75rem;color:#555568;}
+.cbar-wrap{background:#1e1e2e;border-radius:99px;height:8px;overflow:hidden;margin:5px 0;}
+.prob-row{margin:8px 0;}
+.prob-label{font-size:.8rem;color:#9090b0;margin-bottom:3px;}
+.prob-bar-bg{background:#1e1e2e;border-radius:99px;height:10px;overflow:hidden;}
+.prob-bar-fill{height:100%;border-radius:99px;}
+.stButton>button{background:#f4622a!important;color:white!important;border:none!important;border-radius:10px!important;font-weight:700!important;font-size:1rem!important;padding:14px 24px!important;width:100%!important;letter-spacing:1px!important;}
+.stButton>button:hover{background:#c04a1e!important;}
+#MainMenu,footer,header{visibility:hidden;}
 </style>
 """, unsafe_allow_html=True)
 
-
-# ══════════════════════════════════════════════════════════════
-#  API HELPERS
-# ══════════════════════════════════════════════════════════════
+POPULAR_LEAGUES = {
+    "🏴󠁧󠁢󠁥󠁮󠁧󠁿 England — Premier League":  {"id":39,  "season":2024},
+    "🇪🇸 Spain — La Liga":              {"id":140, "season":2024},
+    "🇩🇪 Germany — Bundesliga":         {"id":78,  "season":2024},
+    "🇮🇹 Italy — Serie A":              {"id":135, "season":2024},
+    "🇫🇷 France — Ligue 1":             {"id":61,  "season":2024},
+    "🇵🇹 Portugal — Primeira Liga":      {"id":94,  "season":2024},
+    "🇳🇱 Netherlands — Eredivisie":      {"id":88,  "season":2024},
+    "🇹🇷 Turkey — Süper Lig":           {"id":203, "season":2024},
+    "🇸🇦 Saudi Arabia — Pro League":     {"id":307, "season":2024},
+    "🇲🇽 Mexico — Liga MX":             {"id":262, "season":2024},
+    "🇧🇷 Brazil — Série A":              {"id":71,  "season":2025},
+    "🇦🇷 Argentina — Liga Profesional":  {"id":128, "season":2024},
+    "🇨🇴 Colombia — Liga BetPlay":       {"id":239, "season":2025},
+    "🇺🇸 USA — MLS":                    {"id":253, "season":2025},
+    "🏆 UEFA Champions League":         {"id":2,   "season":2024},
+    "🏆 UEFA Europa League":            {"id":3,   "season":2024},
+}
 
 def api_get(endpoint, params=None):
     try:
-        r = requests.get(f"{BASE_URL}/{endpoint}", headers=HEADERS, params=params, timeout=15)
-        r.raise_for_status()
+        r = requests.get(f"{BASE_URL}/{endpoint}", headers=get_headers(), params=params, timeout=15)
+        if r.status_code == 401:
+            st.error("❌ API Key inválida.")
+            return []
+        if r.status_code == 429:
+            st.warning("⚠️ Límite de requests alcanzado. Espera 1 minuto.")
+            return []
         return r.json().get("response", [])
     except Exception as e:
-        st.error(f"Error de API: {e}")
+        st.error(f"Error: {e}")
         return []
 
-
-@st.cache_data(ttl=3600)
-def get_leagues():
-    data = api_get("leagues", {"current": "true"})
-    leagues = []
-    for item in data:
-        lg = item.get("league", {})
-        ct = item.get("country", {})
-        leagues.append({
-            "id": lg.get("id"),
-            "name": lg.get("name"),
-            "country": ct.get("name", ""),
-            "display": f"{ct.get('name','?')} — {lg.get('name','?')}",
-        })
-    return sorted(leagues, key=lambda x: x["display"])
-
-
-@st.cache_data(ttl=1800)
-def get_fixtures(league_id, season=None):
-    from datetime import datetime, timedelta
-    current_year = datetime.now().year
-    today = datetime.now().strftime("%Y-%m-%d")
-    future = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
-
-    # Seasons to try: current and previous year
-    seasons_to_try = [season] if season else [current_year, current_year - 1]
-
-    for s in seasons_to_try:
-        # Strategy 1: next N fixtures (not started)
-        data = api_get("fixtures", {"league": league_id, "season": s, "status": "NS", "next": 20})
-        
-        # Strategy 2: by date range
-        if not data:
-            data = api_get("fixtures", {"league": league_id, "season": s, "from": today, "to": future})
-        
-        # Strategy 3: just next without status filter
-        if not data:
-            data = api_get("fixtures", {"league": league_id, "season": s, "next": 20})
-
+@st.cache_data(ttl=900)
+def get_fixtures_for_league(league_id, season):
+    today  = datetime.now().strftime("%Y-%m-%d")
+    future = (datetime.now() + timedelta(days=21)).strftime("%Y-%m-%d")
+    for params in [
+        {"league": league_id, "season": season, "status": "NS", "next": 20},
+        {"league": league_id, "season": season, "from": today, "to": future},
+        {"league": league_id, "season": season, "next": 20},
+    ]:
+        data = api_get("fixtures", params)
         if data:
             matches = []
             for f in data:
                 fix   = f.get("fixture", {})
                 teams = f.get("teams",   {})
-                st_short = fix.get("status", {}).get("short", "")
-                if st_short in ("FT", "AET", "PEN", "CANC", "ABD"):
+                if fix.get("status", {}).get("short","") in ("FT","AET","PEN","CANC","ABD","PST"):
                     continue
                 matches.append({
                     "id":      fix.get("id"),
-                    "date":    fix.get("date", "")[:10],
-                    "home":    teams.get("home", {}).get("name", "?"),
-                    "away":    teams.get("away", {}).get("name", "?"),
-                    "home_id": teams.get("home", {}).get("id"),
-                    "away_id": teams.get("away", {}).get("id"),
-                    "season":  s,
-                    "display": f"{fix.get('date','')[:10]}  |  {teams.get('home',{}).get('name','?')}  vs  {teams.get('away',{}).get('name','?')}",
+                    "date":    fix.get("date","")[:10],
+                    "home":    teams.get("home",{}).get("name","?"),
+                    "away":    teams.get("away",{}).get("name","?"),
+                    "home_id": teams.get("home",{}).get("id"),
+                    "away_id": teams.get("away",{}).get("id"),
+                    "season":  season,
+                    "display": f"📅 {fix.get('date','')[:10]}  |  {teams.get('home',{}).get('name','?')}  vs  {teams.get('away',{}).get('name','?')}",
                 })
             if matches:
                 return matches
     return []
 
-
 @st.cache_data(ttl=3600)
-def get_team_stats(team_id, league_id, season=None):
-    from datetime import datetime
-    current_year = datetime.now().year
-    seasons_to_try = [season] if season else [current_year, current_year - 1]
-    for s in seasons_to_try:
+def get_team_stats(team_id, league_id, season):
+    for s in [season, season-1]:
         data = api_get("teams/statistics", {"team": team_id, "league": league_id, "season": s})
         if data:
             return data
     return {}
 
-
 @st.cache_data(ttl=3600)
-def get_last_fixtures(team_id, league_id, n=10):
-    from datetime import datetime
-    current_year = datetime.now().year
-    for s in [current_year, current_year - 1]:
-        data = api_get("fixtures", {"team": team_id, "league": league_id, "season": s,
-                                     "status": "FT", "last": n})
+def get_last_fixtures(team_id, season):
+    for s in [season, season-1]:
+        data = api_get("fixtures", {"team": team_id, "season": s, "status": "FT", "last": 10})
         if data:
             return data
     return []
 
+def safe_float(v, d=0.0):
+    try: return float(v) if v is not None else d
+    except: return d
 
-# ══════════════════════════════════════════════════════════════
-#  STATISTICS EXTRACTORS
-# ══════════════════════════════════════════════════════════════
-
-def safe_float(v, default=0.0):
-    try:
-        return float(v) if v is not None else default
-    except:
-        return default
-
-
-def extract_team_profile(stats, last_fixtures, is_home=True):
-    """Extract rich statistical profile from API responses."""
-    venue = "home" if is_home else "away"
-
-    # Goals
-    goals_for_avg  = safe_float(stats.get("goals", {}).get("for",  {}).get("average", {}).get(venue, 1.3))
-    goals_ag_avg   = safe_float(stats.get("goals", {}).get("against", {}).get("average", {}).get(venue, 1.1))
-
-    # Shots
-    shots_total = safe_float(stats.get("shots", {}).get("total",  {}).get("average", 12))
-    shots_on    = safe_float(stats.get("shots", {}).get("on",     {}).get("average", 4.5))
-
-    # Cards (from fixtures history)
-    yellows, reds, fouls, corners = [], [], [], []
-    clean_sheets = 0
-
-    for f in last_fixtures:
-        teams    = f.get("teams", {})
-        fix_id   = f.get("fixture", {}).get("id")
-        score    = f.get("score", {}).get("fulltime", {})
-        home_sc  = score.get("home", 0) or 0
-        away_sc  = score.get("away", 0) or 0
-
-        is_team_home = teams.get("home", {}).get("id") == (stats.get("team", {}).get("id"))
-        team_goals = home_sc if is_team_home else away_sc
-        opp_goals  = away_sc if is_team_home else home_sc
-
-        if opp_goals == 0:
-            clean_sheets += 1
-
-    # Fallback league averages if stats incomplete
-    yellows_avg  = safe_float(stats.get("cards",  {}).get("yellow", {}).get("average", 1.8))
-    reds_avg     = safe_float(stats.get("cards",  {}).get("red",    {}).get("average", 0.1))
-    fouls_avg    = safe_float(stats.get("fouls",  {}).get("committed", {}).get("average", 12.0))
-    corners_avg  = safe_float(stats.get("corners",{}).get("total",     {}).get("average",  5.2))
-
-    cs_pct = clean_sheets / max(len(last_fixtures), 1)
-
+def extract_profile(stats, is_home=True):
+    v = "home" if is_home else "away"
+    def g(path, d=0.0):
+        try:
+            x = stats
+            for k in path: x = x[k]
+            return safe_float(x, d)
+        except: return d
+    gf = g(["goals","for","average",v]) or g(["goals","for","average","total"]) or 1.3
+    ga = g(["goals","against","average",v]) or g(["goals","against","average","total"]) or 1.1
+    def card_avg(color):
+        d = stats.get("cards",{}).get(color,{}) if stats else {}
+        vals = [safe_float(vv) for vv in d.values() if safe_float(vv) > 0]
+        return round(sum(vals)/len(vals),2) if vals else (1.8 if color=="yellow" else 0.1)
     return {
-        "goals_for":    goals_for_avg,
-        "goals_against":goals_ag_avg,
-        "shots_total":  shots_total,
-        "shots_on":     shots_on,
-        "yellows":      yellows_avg  if yellows_avg  > 0 else 1.8,
-        "reds":         reds_avg     if reds_avg     > 0 else 0.1,
-        "fouls":        fouls_avg    if fouls_avg    > 0 else 12.0,
-        "corners":      corners_avg  if corners_avg  > 0 else 5.2,
-        "clean_sheet_pct": cs_pct,
-        "btts_scored":  1.0,  # placeholder, computed below
+        "goals_for":     max(0.3, gf),
+        "goals_against": max(0.3, ga),
+        "shots_on":      g(["shots","on","average"], 4.5),
+        "yellows":       card_avg("yellow"),
+        "reds":          card_avg("red"),
+        "fouls":         g(["fouls","committed","average"], 12.0),
+        "corners":       g(["corners","total","average"], 5.2),
     }
 
-
-# ══════════════════════════════════════════════════════════════
-#  MONTE CARLO ENGINE
-# ══════════════════════════════════════════════════════════════
-
-def run_monte_carlo(home_profile, away_profile):
-    """10,000 Monte Carlo simulations of a football match."""
+def run_mc(hp, ap):
     rng = np.random.default_rng(42)
-
-    # ── Goal simulation (Dixon-Coles inspired) ──
-    home_attack = home_profile["goals_for"]
-    away_attack = away_profile["goals_for"]
-    home_defence= home_profile["goals_against"]
-    away_defence= away_profile["goals_against"]
-
-    league_avg = 1.35  # typical league average
-    home_advantage = 1.12
-
-    lambda_home = max(0.3, home_attack * (away_defence / league_avg) * home_advantage)
-    lambda_away = max(0.3, away_attack * (home_defence / league_avg))
-
-    home_goals_sim = rng.poisson(lambda_home, N_SIMULATIONS)
-    away_goals_sim = rng.poisson(lambda_away, N_SIMULATIONS)
-
-    home_wins = np.sum(home_goals_sim > away_goals_sim)
-    draws     = np.sum(home_goals_sim == away_goals_sim)
-    away_wins = np.sum(home_goals_sim < away_goals_sim)
-
-    # ── Over 2.5 ──
-    total_goals = home_goals_sim + away_goals_sim
-    over25 = np.sum(total_goals > 2.5)
-
-    # ── BTTS ──
-    btts = np.sum((home_goals_sim > 0) & (away_goals_sim > 0))
-
-    # ── Corners ──
-    home_corners_sim = rng.poisson(home_profile["corners"], N_SIMULATIONS)
-    away_corners_sim = rng.poisson(away_profile["corners"],  N_SIMULATIONS)
-    total_corners    = home_corners_sim + away_corners_sim
-
-    # ── Cards ──
-    home_yellows_sim = rng.poisson(home_profile["yellows"], N_SIMULATIONS)
-    away_yellows_sim = rng.poisson(away_profile["yellows"], N_SIMULATIONS)
-    total_yellows    = home_yellows_sim + away_yellows_sim
-
-    home_reds_sim    = rng.poisson(home_profile["reds"], N_SIMULATIONS)
-    away_reds_sim    = rng.poisson(away_profile["reds"], N_SIMULATIONS)
-    total_reds       = home_reds_sim + away_reds_sim
-
-    # ── Fouls ──
-    home_fouls_sim   = rng.poisson(home_profile["fouls"], N_SIMULATIONS)
-    away_fouls_sim   = rng.poisson(away_profile["fouls"],  N_SIMULATIONS)
-    total_fouls      = home_fouls_sim + away_fouls_sim
-
-    # ── Shots on target ──
-    home_shots_sim   = rng.poisson(home_profile["shots_on"], N_SIMULATIONS)
-    away_shots_sim   = rng.poisson(away_profile["shots_on"],  N_SIMULATIONS)
-
-    # ── Scoreline probabilities (top 9) ──
+    lh = max(0.3, hp["goals_for"] * (ap["goals_against"]/1.35) * 1.12)
+    la = max(0.3, ap["goals_for"] * (hp["goals_against"]/1.35))
+    hg  = rng.poisson(lh, N_SIMULATIONS)
+    ag  = rng.poisson(la, N_SIMULATIONS)
+    tot = hg + ag
+    def p(n): return round(n/N_SIMULATIONS*100, 1)
+    hc  = rng.poisson(hp["corners"], N_SIMULATIONS)
+    ac  = rng.poisson(ap["corners"],  N_SIMULATIONS)
+    hy  = rng.poisson(hp["yellows"], N_SIMULATIONS)
+    ay  = rng.poisson(ap["yellows"], N_SIMULATIONS)
+    hr  = rng.poisson(hp["reds"],    N_SIMULATIONS)
+    ar  = rng.poisson(ap["reds"],    N_SIMULATIONS)
+    hf  = rng.poisson(hp["fouls"],   N_SIMULATIONS)
+    af  = rng.poisson(ap["fouls"],   N_SIMULATIONS)
+    hs  = rng.poisson(hp["shots_on"],N_SIMULATIONS)
+    as_ = rng.poisson(ap["shots_on"],N_SIMULATIONS)
     scores = {}
-    for h, a in zip(home_goals_sim[:], away_goals_sim[:]):
-        k = f"{h}-{a}"
-        scores[k] = scores.get(k, 0) + 1
-    top_scores = sorted(scores.items(), key=lambda x: -x[1])[:9]
-
-    def pct(n): return round(n / N_SIMULATIONS * 100, 1)
-
+    for h,a in zip(hg,ag):
+        k=f"{h}-{a}"; scores[k]=scores.get(k,0)+1
     return {
-        # 1X2
-        "prob_home_win": pct(home_wins),
-        "prob_draw":     pct(draws),
-        "prob_away_win": pct(away_wins),
-        # Goals
-        "lambda_home": round(lambda_home, 2),
-        "lambda_away": round(lambda_away, 2),
-        "over25_pct":  pct(over25),
-        "btts_pct":    pct(btts),
-        # Corners
-        "home_corners_avg": round(np.mean(home_corners_sim), 2),
-        "away_corners_avg": round(np.mean(away_corners_sim), 2),
-        "total_corners_avg":round(np.mean(total_corners), 2),
-        "corners_over85_pct": pct(np.sum(total_corners > 8.5)),
-        # Cards
-        "home_yellows_avg":  round(np.mean(home_yellows_sim), 2),
-        "away_yellows_avg":  round(np.mean(away_yellows_sim), 2),
-        "total_yellows_avg": round(np.mean(total_yellows), 2),
-        "total_reds_avg":    round(np.mean(total_reds), 2),
-        "home_reds_avg":     round(np.mean(home_reds_sim), 2),
-        "away_reds_avg":     round(np.mean(away_reds_sim), 2),
-        # Fouls
-        "home_fouls_avg":   round(np.mean(home_fouls_sim), 2),
-        "away_fouls_avg":   round(np.mean(away_fouls_sim), 2),
-        "total_fouls_avg":  round(np.mean(total_fouls), 2),
-        # Shots
-        "home_shots_avg":  round(np.mean(home_shots_sim), 2),
-        "away_shots_avg":  round(np.mean(away_shots_sim), 2),
-        # Scorelines
-        "top_scores": [(s, pct(c)) for s, c in top_scores],
+        "phw": p(np.sum(hg>ag)), "pd": p(np.sum(hg==ag)), "paw": p(np.sum(hg<ag)),
+        "lh": round(lh,2), "la": round(la,2),
+        "o25": p(np.sum(tot>2.5)),  "u25": p(np.sum(tot<=2.5)),
+        "btts": p(np.sum((hg>0)&(ag>0))), "no_btts": p(np.sum(~((hg>0)&(ag>0)))),
+        "hc": round(np.mean(hc),2), "ac": round(np.mean(ac),2), "tc": round(np.mean(hc+ac),2),
+        "co85": p(np.sum(hc+ac>8.5)),  "cu85": p(np.sum(hc+ac<=8.5)),
+        "hy": round(np.mean(hy),2), "ay": round(np.mean(ay),2), "ty": round(np.mean(hy+ay),2),
+        "hr": round(np.mean(hr),2), "ar": round(np.mean(ar),2), "tr": round(np.mean(hr+ar),2),
+        "hf": round(np.mean(hf),2), "af": round(np.mean(af),2), "tf": round(np.mean(hf+af),2),
+        "hs": round(np.mean(hs),2), "as_": round(np.mean(as_),2),
+        "top": [(s,p(c)) for s,c in sorted(scores.items(),key=lambda x:-x[1])[:9]],
     }
 
+def conf_style(c):
+    if c >= 80:   return ("#3ecf8e", "✅ ALTA",   "pred-card",     "rgba(62,207,142,0.15)")
+    elif c >= 60: return ("#f5c842", "⚡ MEDIA",  "pred-card-med", "rgba(245,200,66,0.12)")
+    else:         return ("#f4622a", "⚠️ BAJA",   "pred-card-low", "rgba(244,98,42,0.12)")
 
-# ══════════════════════════════════════════════════════════════
-#  UI HELPERS
-# ══════════════════════════════════════════════════════════════
+def build_predictions(R, hn, an):
+    rows = []
+    # 1X2
+    best = max([(R["phw"], f"🏠 Victoria {hn}"), (R["pd"],"🤝 Empate"), (R["paw"],f"✈️ Victoria {an}")], key=lambda x:x[0])
+    rows.append({"mercado":"Resultado 1X2","pick":best[1],"conf":best[0],"detalle":f"Local {R['phw']}% / Empate {R['pd']}% / Visita {R['paw']}%"})
+    # O/U 2.5
+    if R["o25"]>=R["u25"]: rows.append({"mercado":"Goles O/U 2.5","pick":"⚽ Más de 2.5 goles","conf":R["o25"],"detalle":f"Goles esperados: {round(R['lh']+R['la'],2)}"})
+    else:                   rows.append({"mercado":"Goles O/U 2.5","pick":"🔒 Menos de 2.5 goles","conf":R["u25"],"detalle":f"Goles esperados: {round(R['lh']+R['la'],2)}"})
+    # BTTS
+    if R["btts"]>=R["no_btts"]: rows.append({"mercado":"Ambos Marcan (BTTS)","pick":"✅ Sí — Ambos anotan","conf":R["btts"],"detalle":f"λ local {R['lh']} / λ visita {R['la']}"})
+    else:                        rows.append({"mercado":"Ambos Marcan (BTTS)","pick":"❌ No — Alguno no anota","conf":R["no_btts"],"detalle":f"λ local {R['lh']} / λ visita {R['la']}"})
+    # Corners
+    if R["co85"]>=R["cu85"]: rows.append({"mercado":"Córners O/U 8.5","pick":"🚩 Más de 8.5 córners","conf":R["co85"],"detalle":f"Total esperado: {R['tc']}"})
+    else:                     rows.append({"mercado":"Córners O/U 8.5","pick":"🔒 Menos de 8.5 córners","conf":R["cu85"],"detalle":f"Total esperado: {R['tc']}"})
+    # Doble oportunidad
+    dc1 = min(round(R["phw"]+R["pd"],1), 99.0); dc2 = min(round(R["paw"]+R["pd"],1), 99.0)
+    if dc1>=dc2: rows.append({"mercado":"Doble Oportunidad","pick":f"🏠 {hn} o Empate","conf":dc1,"detalle":"Dos resultados posibles cubiertos"})
+    else:        rows.append({"mercado":"Doble Oportunidad","pick":f"✈️ {an} o Empate","conf":dc2,"detalle":"Dos resultados posibles cubiertos"})
+    # Tarjetas
+    ty = R["ty"]; line = max(1, round(ty)-1)
+    prob_y = min(95.0, max(5.0, round(50+(ty-line-0.5)*18, 1)))
+    rows.append({"mercado":f"Amarillas O {line}.5","pick":f"🟨 Más de {line}.5 amarillas","conf":prob_y,"detalle":f"Total amarillas esperadas: {ty}"})
+    # Marcador exacto
+    top = R["top"][0]
+    rows.append({"mercado":"Marcador Exacto","pick":f"🎯 Resultado {top[0]}","conf":top[1],"detalle":"Marcador más frecuente en simulaciones"})
+    return sorted(rows, key=lambda x: -x["conf"])
 
-def prob_bar(label, pct, color="#f4622a"):
+def render_pred(pred):
+    color, badge, card_cls, bg = conf_style(pred["conf"])
+    c = pred["conf"]
+    warn = ""
+    if c < 60:
+        warn = f'<div style="background:rgba(244,98,42,0.1);border-radius:8px;padding:6px 12px;margin-top:8px;font-size:.78rem;color:#f4622a">⚠️ <b>RIESGO ALTO</b> — Confianza baja ({c}%). Evita apostar en este mercado.</div>'
+    elif c < 80:
+        warn = f'<div style="background:rgba(245,200,66,0.08);border-radius:8px;padding:6px 12px;margin-top:8px;font-size:.78rem;color:#f5c842">⚡ <b>CONFIANZA MEDIA</b> ({c}%) — Analiza antes de apostar.</div>'
+
     st.markdown(f"""
-    <div class="prob-row">
-      <div class="prob-label">{label} — <b style="color:{color}">{pct}%</b></div>
-      <div class="prob-bar-bg">
-        <div class="prob-bar-fill" style="width:{min(pct,100)}%;background:{color}"></div>
+    <div class="{card_cls}">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div style="min-width:130px">
+          <div class="pred-market">{pred['mercado']}</div>
+        </div>
+        <div style="flex:1">
+          <div class="pred-pick">{pred['pick']}</div>
+          <div class="pred-detail">{pred['detalle']}</div>
+        </div>
+        <div style="text-align:center;min-width:100px">
+          <div style="font-family:'Bebas Neue',sans-serif;font-size:2rem;line-height:1;color:{color}">{c}%</div>
+          <div class="cbar-wrap">
+            <div style="width:{int(min(c,100))}%;height:100%;background:{color};border-radius:99px"></div>
+          </div>
+          <span style="display:inline-block;background:{bg};color:{color};border:1px solid {color}44;border-radius:6px;padding:2px 8px;font-size:.72rem;font-weight:700;margin-top:3px">{badge}</span>
+        </div>
       </div>
+      {warn}
     </div>""", unsafe_allow_html=True)
 
+def prob_bar(label, val, color):
+    st.markdown(f"""<div class="prob-row">
+      <div class="prob-label">{label} — <b style="color:{color}">{val}%</b></div>
+      <div class="prob-bar-bg"><div class="prob-bar-fill" style="width:{min(val,100)}%;background:{color}"></div></div>
+    </div>""", unsafe_allow_html=True)
 
 def metric_card(val, label, col):
-    col.markdown(f"""
-    <div class="metric-card">
-      <div class="metric-val">{val}</div>
-      <div class="metric-lbl">{label}</div>
-    </div>""", unsafe_allow_html=True)
-
+    col.markdown(f'<div class="metric-card"><div class="metric-val">{val}</div><div class="metric-lbl">{label}</div></div>', unsafe_allow_html=True)
 
 def section(title):
     st.markdown(f'<div class="sec-title">{title}</div>', unsafe_allow_html=True)
 
-
-# ══════════════════════════════════════════════════════════════
-#  MAIN APP
-# ══════════════════════════════════════════════════════════════
-
-# Hero
-st.markdown("""
-<div class="hero">
-  <h1>⚽ FOOTBALL ORACLE</h1>
-  <p>Monte Carlo · 10,000 Simulaciones · Análisis Estadístico Avanzado</p>
-</div>
-""", unsafe_allow_html=True)
-
-# API Key override in sidebar
+# ── SIDEBAR ───────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🔑 API Key")
-    key_input = st.text_input("API Key (api-sports.io)", value=API_KEY, type="password")
-    if key_input and key_input != "TU_API_KEY_AQUI":
-        API_KEY = key_input
-        HEADERS["x-apisports-key"] = API_KEY
+    ki = st.text_input("api-sports.io key", value=st.session_state.get("api_key", API_KEY), type="password")
+    if ki: st.session_state["api_key"] = ki
+    st.markdown("---")
+    if st.button("🔍 Probar API Key"):
+        with st.spinner("Probando..."):
+            try:
+                r = requests.get(f"{BASE_URL}/status", headers=get_headers(), timeout=10)
+                d = r.json().get("response", {})
+                acct = d.get("account",{}); sub = d.get("subscription",{}); req = d.get("requests",{})
+                if r.status_code==200 and acct:
+                    st.success("✅ Conectado!")
+                    st.markdown(f"**Email:** {acct.get('email','?')}")
+                    st.markdown(f"**Plan:** {sub.get('plan','?')}")
+                    st.markdown(f"**Activa:** {'Sí ✅' if sub.get('active') else 'No ❌'}")
+                    st.markdown(f"**Requests hoy:** {req.get('current',0)}/{req.get('limit_day',100)}")
+                else:
+                    st.error(f"HTTP {r.status_code}: {r.text[:200]}")
+            except Exception as e: st.error(f"{e}")
     st.markdown("---")
     st.markdown("**Modelo:** Poisson + Monte Carlo")
-    st.markdown("**Sims:** 10,000")
-    from datetime import datetime
-    st.markdown(f"**Temporada:** {datetime.now().year}")
+    st.markdown("**Simulaciones:** 10,000")
     st.markdown("---")
-    debug_mode = st.checkbox("🛠️ Modo Diagnóstico", value=False)
+    st.markdown("**Leyenda:**")
+    st.markdown("✅ **ALTA** ≥ 80% — Apostar")
+    st.markdown("⚡ **MEDIA** 60–79% — Con cuidado")
+    st.markdown("⚠️ **BAJA** < 60% — Evitar")
 
-# ── Step 1: Choose league ─────────────────────────────────────
+# ── MAIN ──────────────────────────────────────────────────────
+st.markdown('<div class="hero"><h1>⚽ FOOTBALL ORACLE</h1><p>Monte Carlo · 10,000 Simulaciones · Sistema de Confiabilidad por Mercado</p></div>', unsafe_allow_html=True)
+
+if not st.session_state.get("api_key") or st.session_state.get("api_key") == "TU_API_KEY_AQUI":
+    st.warning("⚠️ Abre el sidebar (≡) y pega tu API Key para comenzar.")
+    st.stop()
+
 section("① ELIGE LA LIGA")
+league_name = st.selectbox("Liga", list(POPULAR_LEAGUES.keys()), label_visibility="collapsed")
+lg = POPULAR_LEAGUES[league_name]
 
-if API_KEY == "TU_API_KEY_AQUI":
-    st.warning("⚠️ Pega tu API Key de api-sports.io en el sidebar (ícono ≡) o en el código (línea 15).")
-    debug_mode = False
-    st.stop()
-
-# ── DIAGNOSTIC MODE ──────────────────────────────────────────
-if debug_mode:
-    section("🛠️ DIAGNÓSTICO DE API")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("🔍 Test conexión API"):
-            with st.spinner("Probando..."):
-                try:
-                    r = requests.get(f"{BASE_URL}/status", headers=HEADERS, timeout=10)
-                    st.code(f"Status HTTP: {r.status_code}\n\n{json.dumps(r.json(), indent=2)[:800]}", language="json")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-    
-    with col2:
-        if st.button("📋 Ver ligas raw"):
-            with st.spinner("Consultando..."):
-                try:
-                    r = requests.get(f"{BASE_URL}/leagues", headers=HEADERS, 
-                                    params={"current": "true"}, timeout=15)
-                    data = r.json()
-                    st.code(f"HTTP {r.status_code}\nTotal: {data.get('results',0)} ligas\n\nPrimeras 3:\n{json.dumps(data.get('response',[])[:3], indent=2)[:1000]}", language="json")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-    
-    test_league = st.number_input("ID de liga a testear (Premier League=39, LaLiga=140)", value=39, step=1)
-    test_season = st.number_input("Temporada a testear", value=2024, step=1)
-    
-    if st.button("⚽ Ver partidos de esta liga/temporada"):
-        with st.spinner("Consultando fixtures..."):
-            try:
-                r = requests.get(f"{BASE_URL}/fixtures", headers=HEADERS,
-                                params={"league": int(test_league), "season": int(test_season), "next": 5}, timeout=15)
-                data = r.json()
-                st.code(f"HTTP {r.status_code}\nResultados: {data.get('results',0)}\n\nPrimero:\n{json.dumps(data.get('response',[])[:2], indent=2)[:1200]}", language="json")
-                
-                # Also show account info
-                r2 = requests.get(f"{BASE_URL}/status", headers=HEADERS, timeout=10)
-                acct = r2.json().get("response", {}).get("account", {})
-                sub = r2.json().get("response", {}).get("subscription", {})
-                st.info(f"**Cuenta:** {acct.get('email','?')} | **Plan:** {sub.get('plan','?')} | **Activa:** {sub.get('active','?')}")
-            except Exception as e:
-                st.error(f"Error: {e}")
-    
-    st.divider()
-
-with st.spinner("Cargando ligas disponibles..."):
-    leagues = get_leagues()
-
-if not leagues:
-    st.error("No se pudieron cargar las ligas. Verifica tu API Key.")
-    st.stop()
-
-league_options = {lg["display"]: lg for lg in leagues}
-selected_league_display = st.selectbox("Liga", list(league_options.keys()), label_visibility="collapsed")
-selected_league = league_options[selected_league_display]
-
-# ── Step 2: Choose match ──────────────────────────────────────
 section("② ELIGE EL PARTIDO")
-
-with st.spinner("Cargando próximos partidos..."):
-    fixtures = get_fixtures(selected_league["id"])
-    current_season = fixtures[0]["season"] if fixtures else None
+with st.spinner("Buscando partidos próximos..."):
+    fixtures = get_fixtures_for_league(lg["id"], lg["season"])
 
 if not fixtures:
-    st.warning("No hay partidos próximos para esta liga. Prueba con otra liga.")
+    st.warning(f"No se encontraron partidos próximos para **{league_name}**.")
+    st.info("Prueba otra liga o verifica tu API Key.")
+    with st.expander("🛠️ Respuesta cruda de la API"):
+        try:
+            r = requests.get(f"{BASE_URL}/fixtures", headers=get_headers(),
+                             params={"league":lg["id"],"season":lg["season"],"next":5}, timeout=15)
+            st.code(f"HTTP {r.status_code}\n\n{json.dumps(r.json(),indent=2)[:2000]}", language="json")
+        except Exception as e: st.error(str(e))
     st.stop()
 
-match_options = {f["display"]: f for f in fixtures}
-selected_match_display = st.selectbox("Partido", list(match_options.keys()), label_visibility="collapsed")
-selected_match = match_options[selected_match_display]
+M = {f["display"]: f for f in fixtures}
+sel = st.selectbox("Partido", list(M.keys()), label_visibility="collapsed")
+match = M[sel]
 
-# Matchup display
-st.markdown(f"""
-<div class="matchup">
-  <span class="team-name">{selected_match['home']}</span>
+st.markdown(f"""<div class="matchup">
+  <span class="team-name">{match['home']}</span>
   &nbsp;&nbsp;<span class="vs-badge">VS</span>&nbsp;&nbsp;
-  <span class="team-name">{selected_match['away']}</span>
-  <br><span style="color:#555568;font-size:0.8rem">{selected_match['date']}</span>
-</div>
-""", unsafe_allow_html=True)
+  <span class="team-name">{match['away']}</span>
+  <br><span style="color:#555568;font-size:.85rem">📅 {match['date']}  ·  Temporada {match['season']}</span>
+</div>""", unsafe_allow_html=True)
 
-# ── Step 3: Analyze ───────────────────────────────────────────
 if st.button("🔮 ANALIZAR CON MONTE CARLO"):
+    with st.spinner("Ejecutando 10,000 simulaciones..."):
+        s   = match["season"]
+        hp  = extract_profile(get_team_stats(match["home_id"], lg["id"], s), True)
+        ap  = extract_profile(get_team_stats(match["away_id"], lg["id"], s), False)
+        R   = run_mc(hp, ap)
+        preds = build_predictions(R, match["home"], match["away"])
 
-    with st.spinner("Recopilando estadísticas y ejecutando 10,000 simulaciones..."):
+    st.success("✅ 10,000 simulaciones completadas")
 
-        season_to_use = selected_match.get("season")
-        home_stats_raw = get_team_stats(selected_match["home_id"], selected_league["id"], season_to_use)
-        away_stats_raw = get_team_stats(selected_match["away_id"], selected_league["id"], season_to_use)
+    # ── PREDICCIONES CON CONFIANZA ────────────────────────────
+    section("🎯 PREDICCIONES — NIVEL DE CONFIANZA")
 
-        home_last = get_last_fixtures(selected_match["home_id"], selected_league["id"])
-        away_last = get_last_fixtures(selected_match["away_id"], selected_league["id"])
+    high = [p for p in preds if p["conf"] >= 80]
+    med  = [p for p in preds if 60 <= p["conf"] < 80]
+    low  = [p for p in preds if p["conf"] < 60]
 
-        home_profile = extract_team_profile(home_stats_raw, home_last, is_home=True)
-        away_profile = extract_team_profile(away_stats_raw, away_last, is_home=False)
-
-        results = run_monte_carlo(home_profile, away_profile)
-
-    st.success("✅ Análisis completado — 10,000 simulaciones ejecutadas")
-
-    # ── 1X2 ──────────────────────────────────────────────────
-    section("📊 RESULTADO 1X2")
-    c1, c2, c3 = st.columns(3)
-    metric_card(f"{results['prob_home_win']}%", f"Victoria {selected_match['home'][:12]}", c1)
-    metric_card(f"{results['prob_draw']}%",     "Empate", c2)
-    metric_card(f"{results['prob_away_win']}%", f"Victoria {selected_match['away'][:12]}", c3)
+    c1,c2,c3 = st.columns(3)
+    metric_card(str(len(high)), "Alta Confianza ✅ ≥80%",  c1)
+    metric_card(str(len(med)),  "Confianza Media ⚡ 60-79%", c2)
+    metric_card(str(len(low)),  "Baja Confianza ⚠️ <60%",   c3)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    prob_bar(f"Victoria {selected_match['home']}", results['prob_home_win'], "#3ecf8e")
-    prob_bar("Empate", results['prob_draw'], "#f5c842")
-    prob_bar(f"Victoria {selected_match['away']}", results['prob_away_win'], "#f4622a")
 
-    # ── Goals ────────────────────────────────────────────────
+    if high:
+        st.markdown("#### ✅ Predicciones de ALTA confianza (≥ 80%)")
+        for p in high: render_pred(p)
+    if med:
+        st.markdown("#### ⚡ Predicciones de confianza MEDIA (60–79%)")
+        for p in med: render_pred(p)
+    if low:
+        st.markdown("#### ⚠️ Predicciones de BAJA confianza (< 60%) — Alto riesgo")
+        for p in low: render_pred(p)
+
+    # ── 1X2 ──────────────────────────────────────────────────
+    section("📊 PROBABILIDADES 1X2")
+    prob_bar(f"🏠 {match['home']}", R["phw"], "#3ecf8e")
+    prob_bar("🤝 Empate",            R["pd"],  "#f5c842")
+    prob_bar(f"✈️ {match['away']}", R["paw"], "#f4622a")
+
+    # ── Goles ─────────────────────────────────────────────────
     section("⚽ GOLES PROYECTADOS")
-    c1, c2, c3, c4 = st.columns(4)
-    metric_card(results['lambda_home'], f"Goles esperados\n{selected_match['home'][:10]}", c1)
-    metric_card(results['lambda_away'], f"Goles esperados\n{selected_match['away'][:10]}", c2)
-    metric_card(f"{results['over25_pct']}%", "Más de 2.5 Goles", c3)
-    metric_card(f"{results['btts_pct']}%",   "Ambos Anotan (BTTS)", c4)
+    c1,c2,c3,c4 = st.columns(4)
+    metric_card(R["lh"],           f"Goles esp. {match['home'][:12]}", c1)
+    metric_card(R["la"],           f"Goles esp. {match['away'][:12]}", c2)
+    metric_card(f"{R['o25']}%",    "Más de 2.5 Goles",   c3)
+    metric_card(f"{R['btts']}%",   "Ambos Anotan BTTS",  c4)
 
-    # ── Scorelines ───────────────────────────────────────────
-    section("🎯 MARCADORES MÁS PROBABLES")
-    score_data = pd.DataFrame(results["top_scores"], columns=["Marcador", "Probabilidad (%)"])
-    score_data = score_data.sort_values("Probabilidad (%)", ascending=False)
+    # ── Top Marcadores ────────────────────────────────────────
+    section("🔢 MARCADORES MÁS PROBABLES")
     st.dataframe(
-        score_data.style
-            .background_gradient(subset=["Probabilidad (%)"], cmap="Oranges")
-            .format({"Probabilidad (%)": "{:.1f}%"}),
+        pd.DataFrame(R["top"], columns=["Marcador","Prob %"])
+          .style.background_gradient(subset=["Prob %"], cmap="Oranges")
+          .format({"Prob %":"{:.1f}%"}),
         use_container_width=True, hide_index=True
     )
 
-    # ── Corners ──────────────────────────────────────────────
+    # ── Corners ───────────────────────────────────────────────
     section("🚩 CÓRNERS")
-    c1, c2, c3, c4 = st.columns(4)
-    metric_card(results['home_corners_avg'],    f"Córners\n{selected_match['home'][:10]}", c1)
-    metric_card(results['away_corners_avg'],    f"Córners\n{selected_match['away'][:10]}", c2)
-    metric_card(results['total_corners_avg'],   "Total Córners", c3)
-    metric_card(f"{results['corners_over85_pct']}%", "Más de 8.5 Córners", c4)
+    c1,c2,c3,c4 = st.columns(4)
+    metric_card(R["hc"], f"Córners {match['home'][:12]}", c1)
+    metric_card(R["ac"], f"Córners {match['away'][:12]}", c2)
+    metric_card(R["tc"], "Total Córners",                  c3)
+    metric_card(f"{R['co85']}%", "Más de 8.5 Córners",   c4)
 
-    prob_bar(f"Más Córners: {selected_match['home']}", round(results['home_corners_avg'] / max(results['total_corners_avg'],1) * 100, 1), "#4f8ef7")
-
-    # ── Cards ────────────────────────────────────────────────
+    # ── Cards ─────────────────────────────────────────────────
     section("🟨 TARJETAS")
-    c1, c2, c3, c4 = st.columns(4)
-    metric_card(results['home_yellows_avg'],  f"Amarillas\n{selected_match['home'][:10]}", c1)
-    metric_card(results['away_yellows_avg'],  f"Amarillas\n{selected_match['away'][:10]}", c2)
-    metric_card(results['total_yellows_avg'], "Total Amarillas", c3)
-    metric_card(results['total_reds_avg'],    "Rojas Totales", c4)
+    c1,c2,c3,c4 = st.columns(4)
+    metric_card(R["hy"], f"Amarillas {match['home'][:12]}", c1)
+    metric_card(R["ay"], f"Amarillas {match['away'][:12]}", c2)
+    metric_card(R["ty"], "Total Amarillas",                  c3)
+    metric_card(R["tr"], "Rojas Totales",                    c4)
+
+    # ── Fouls & Shots ─────────────────────────────────────────
+    section("⚡ FALTAS & TIROS A PUERTA")
+    c1,c2 = st.columns(2)
+    with c1:
+        st.dataframe(pd.DataFrame({
+            "Equipo":  [match["home"], match["away"], "TOTAL"],
+            "Faltas":  [R["hf"], R["af"], R["tf"]],
+        }), use_container_width=True, hide_index=True)
+    with c2:
+        st.dataframe(pd.DataFrame({
+            "Equipo":          [match["home"], match["away"]],
+            "Tiros a puerta":  [R["hs"],       R["as_"]],
+        }), use_container_width=True, hide_index=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    cards_df = pd.DataFrame({
-        "Equipo": [selected_match["home"], selected_match["away"]],
-        "Amarillas esperadas": [results["home_yellows_avg"], results["away_yellows_avg"]],
-        "Rojas esperadas":     [results["home_reds_avg"],    results["away_reds_avg"]],
-    })
-    st.dataframe(cards_df, use_container_width=True, hide_index=True)
-
-    # ── Fouls & Shots ────────────────────────────────────────
-    section("⚡ FALTAS & TIROS A PUERTA")
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.markdown("**Faltas Cometidas**")
-        fouls_df = pd.DataFrame({
-            "Equipo": [selected_match["home"], selected_match["away"], "TOTAL"],
-            "Faltas esperadas": [
-                results["home_fouls_avg"],
-                results["away_fouls_avg"],
-                results["total_fouls_avg"]
-            ]
-        })
-        st.dataframe(fouls_df, use_container_width=True, hide_index=True)
-
-    with c2:
-        st.markdown("**Tiros a Puerta**")
-        shots_df = pd.DataFrame({
-            "Equipo": [selected_match["home"], selected_match["away"]],
-            "Tiros a puerta": [results["home_shots_avg"], results["away_shots_avg"]]
-        })
-        st.dataframe(shots_df, use_container_width=True, hide_index=True)
-
-    # ── Summary ──────────────────────────────────────────────
-    section("✅ RESUMEN DE APUESTAS SUGERIDAS")
-
-    best_1x2 = max(
-        [("Victoria " + selected_match["home"], results["prob_home_win"]),
-         ("Empate", results["prob_draw"]),
-         ("Victoria " + selected_match["away"], results["prob_away_win"])],
-        key=lambda x: x[1]
-    )
-
-    bets = [
-        ("1X2", best_1x2[0], f"{best_1x2[1]}%", "alta" if best_1x2[1] > 50 else "media"),
-        ("Goles", "Más de 2.5" if results["over25_pct"] > 50 else "Menos de 2.5",
-         f"{max(results['over25_pct'], 100-results['over25_pct'])}%",
-         "alta" if max(results["over25_pct"], 100-results["over25_pct"]) > 60 else "media"),
-        ("BTTS", "Sí" if results["btts_pct"] > 50 else "No",
-         f"{max(results['btts_pct'], 100-results['btts_pct'])}%",
-         "alta" if max(results["btts_pct"], 100-results["btts_pct"]) > 60 else "media"),
-        ("Córners", f"{'Más' if results['corners_over85_pct'] > 50 else 'Menos'} de 8.5",
-         f"{max(results['corners_over85_pct'], 100-results['corners_over85_pct'])}%",
-         "alta" if max(results["corners_over85_pct"], 100-results["corners_over85_pct"]) > 60 else "media"),
-    ]
-
-    bets_df = pd.DataFrame(bets, columns=["Mercado", "Selección", "Confianza", "Nivel"])
-    st.dataframe(bets_df, use_container_width=True, hide_index=True)
-
-    st.info("⚠️ Este análisis es estadístico y educativo. Las apuestas deportivas implican riesgo. Juega con responsabilidad.")
+    st.info("⚠️ Análisis estadístico y educativo. Las apuestas implican riesgo real. ✅ ALTA confianza = mayor probabilidad estadística, NO garantía de resultado.")
