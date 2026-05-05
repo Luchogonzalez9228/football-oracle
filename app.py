@@ -11,14 +11,15 @@ from scipy import stats
 import json
 
 # ─────────────────────────────────────────────────────────────
-#  🔑  PEGA TU API KEY AQUÍ
+#  🔑  PEGA TU API KEY AQUÍ  (de dashboard.api-sports.io)
 # ─────────────────────────────────────────────────────────────
-API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"
+API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"   # ← pega aquí tu key de api-sports.io
 BASE_URL = "https://v3.football.api-sports.io"
 # ─────────────────────────────────────────────────────────────
 
 HEADERS = {"x-apisports-key": API_KEY}
 N_SIMULATIONS = 10_000
+
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
     page_title="Football Oracle",
@@ -398,10 +399,10 @@ st.markdown("""
 # API Key override in sidebar
 with st.sidebar:
     st.markdown("### 🔑 API Key")
-    key_input = st.text_input("RapidAPI Key (API-Football)", value=API_KEY, type="password")
+    key_input = st.text_input("API Key (api-sports.io)", value=API_KEY, type="password")
     if key_input and key_input != "TU_API_KEY_AQUI":
         API_KEY = key_input
-        HEADERS["x-rapidapi-key"] = API_KEY
+        HEADERS["x-apisports-key"] = API_KEY
     st.markdown("---")
     st.markdown("**Modelo:** Poisson + Monte Carlo")
     st.markdown("**Sims:** 10,000")
@@ -411,7 +412,7 @@ with st.sidebar:
 section("① ELIGE LA LIGA")
 
 if API_KEY == "TU_API_KEY_AQUI":
-    st.warning("⚠️ Pega tu API Key en el sidebar izquierdo (ícono ≡) o en el código (línea 15) para comenzar.")
+    st.warning("⚠️ Pega tu API Key de api-sports.io en el sidebar (ícono ≡) o en el código (línea 15).")
     st.stop()
 
 with st.spinner("Cargando ligas disponibles..."):
