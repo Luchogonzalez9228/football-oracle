@@ -15,7 +15,7 @@ import json
 # ─────────────────────────────────────────────────────────────
 API_KEY = "d9f1b13ab6msh7bb6cb418e629aap1449e4jsn171b5f016448"       # ← reemplaza con tu key de API-Football (RapidAPI)
 API_HOST = "football98.p.rapidapi.com"
-BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
+BASE_URL = "https://football98.p.rapidapi.com"
 # ─────────────────────────────────────────────────────────────
 
 HEADERS = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST}
