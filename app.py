@@ -13,7 +13,7 @@ import json
 # ─────────────────────────────────────────────────────────────
 #  🔑  PEGA TU API KEY AQUÍ  (de dashboard.api-sports.io)
 # ─────────────────────────────────────────────────────────────
-API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"   # ← pega aquí tu key de api-sports.io
+API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"
 BASE_URL = "https://v3.football.api-sports.io"
 # ─────────────────────────────────────────────────────────────
 
@@ -164,35 +164,65 @@ def get_leagues():
 
 
 @st.cache_data(ttl=1800)
-def get_fixtures(league_id, season=2024):
-    data = api_get("fixtures", {"league": league_id, "season": season, "status": "NS", "next": 20})
-    matches = []
-    for f in data:
-        fix = f.get("fixture", {})
-        teams = f.get("teams", {})
-        matches.append({
-            "id": fix.get("id"),
-            "date": fix.get("date", "")[:10],
-            "home": teams.get("home", {}).get("name", "?"),
-            "away": teams.get("away", {}).get("name", "?"),
-            "home_id": teams.get("home", {}).get("id"),
-            "away_id": teams.get("away", {}).get("id"),
-            "display": f"{fix.get('date','')[:10]}  |  {teams.get('home',{}).get('name','?')}  vs  {teams.get('away',{}).get('name','?')}",
-        })
-    return matches
+def get_fixtures(league_id, season=None):
+    # Auto-detect season: try current year first, then fallback
+    from datetime import datetime
+    current_year = datetime.now().year
+    seasons_to_try = [current_year, current_year - 1]
+    if season:
+        seasons_to_try = [season]
+
+    for s in seasons_to_try:
+        # First try upcoming (NS = Not Started)
+        data = api_get("fixtures", {"league": league_id, "season": s, "status": "NS", "next": 20})
+        if not data:
+            # Also try next 30 days regardless of status
+            data = api_get("fixtures", {"league": league_id, "season": s, "next": 30})
+        if data:
+            matches = []
+            for f in data:
+                fix = f.get("fixture", {})
+                teams = f.get("teams", {})
+                status = f.get("fixture", {}).get("status", {}).get("short", "")
+                if status in ("FT", "AET", "PEN"):
+                    continue  # skip finished games
+                matches.append({
+                    "id": fix.get("id"),
+                    "date": fix.get("date", "")[:10],
+                    "home": teams.get("home", {}).get("name", "?"),
+                    "away": teams.get("away", {}).get("name", "?"),
+                    "home_id": teams.get("home", {}).get("id"),
+                    "away_id": teams.get("away", {}).get("id"),
+                    "season": s,
+                    "display": f"{fix.get('date','')[:10]}  |  {teams.get('home',{}).get('name','?')}  vs  {teams.get('away',{}).get('name','?')}",
+                })
+            if matches:
+                return matches
+    return []
 
 
 @st.cache_data(ttl=3600)
-def get_team_stats(team_id, league_id, season=2024):
-    data = api_get("teams/statistics", {"team": team_id, "league": league_id, "season": season})
-    return data if data else {}
+def get_team_stats(team_id, league_id, season=None):
+    from datetime import datetime
+    current_year = datetime.now().year
+    seasons_to_try = [season] if season else [current_year, current_year - 1]
+    for s in seasons_to_try:
+        data = api_get("teams/statistics", {"team": team_id, "league": league_id, "season": s})
+        if data:
+            return data
+    return {}
 
 
 @st.cache_data(ttl=3600)
 def get_last_fixtures(team_id, league_id, n=10):
-    data = api_get("fixtures", {"team": team_id, "league": league_id, "season": 2024,
-                                 "status": "FT", "last": n})
-    return data
+    from datetime import datetime
+    current_year = datetime.now().year
+    for s in [current_year, current_year - 1]:
+        data = api_get("fixtures", {"team": team_id, "league": league_id, "season": s,
+                                     "status": "FT", "last": n})
+        if data:
+            return data
+    return []
 
 
 # ══════════════════════════════════════════════════════════════
@@ -406,7 +436,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Modelo:** Poisson + Monte Carlo")
     st.markdown("**Sims:** 10,000")
-    st.markdown("**Temporada:** 2024")
+    from datetime import datetime
+    st.markdown(f"**Temporada:** {datetime.now().year}")
 
 # ── Step 1: Choose league ─────────────────────────────────────
 section("① ELIGE LA LIGA")
@@ -431,9 +462,10 @@ section("② ELIGE EL PARTIDO")
 
 with st.spinner("Cargando próximos partidos..."):
     fixtures = get_fixtures(selected_league["id"])
+    current_season = fixtures[0]["season"] if fixtures else None
 
 if not fixtures:
-    st.warning("No hay partidos próximos para esta liga en la temporada 2024.")
+    st.warning("No hay partidos próximos para esta liga. Prueba con otra liga.")
     st.stop()
 
 match_options = {f["display"]: f for f in fixtures}
@@ -455,8 +487,9 @@ if st.button("🔮 ANALIZAR CON MONTE CARLO"):
 
     with st.spinner("Recopilando estadísticas y ejecutando 10,000 simulaciones..."):
 
-        home_stats_raw = get_team_stats(selected_match["home_id"], selected_league["id"])
-        away_stats_raw = get_team_stats(selected_match["away_id"], selected_league["id"])
+        season_to_use = selected_match.get("season")
+        home_stats_raw = get_team_stats(selected_match["home_id"], selected_league["id"], season_to_use)
+        away_stats_raw = get_team_stats(selected_match["away_id"], selected_league["id"], season_to_use)
 
         home_last = get_last_fixtures(selected_match["home_id"], selected_league["id"])
         away_last = get_last_fixtures(selected_match["away_id"], selected_league["id"])
