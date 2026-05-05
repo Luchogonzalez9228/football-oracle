@@ -13,8 +13,7 @@ import json
 # ─────────────────────────────────────────────────────────────
 #  🔑  PEGA TU API KEY AQUÍ
 # ─────────────────────────────────────────────────────────────
-API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"      # ← reemplaza con tu key de API-Football (RapidAPI)
-API_HOST = "football98.p.rapidapi.com"
+API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"
 BASE_URL = "https://v3.football.api-sports.io"
 # ─────────────────────────────────────────────────────────────
 
