@@ -13,14 +13,13 @@ import json
 # ─────────────────────────────────────────────────────────────
 #  🔑  PEGA TU API KEY AQUÍ
 # ─────────────────────────────────────────────────────────────
-API_KEY = "d9f1b13ab6msh7bb6cb418e629aap1449e4jsn171b5f016448"       # ← reemplaza con tu key de API-Football (RapidAPI)
+API_KEY = "70cb24441a57cc0a28c2fd7dd3b76110"      # ← reemplaza con tu key de API-Football (RapidAPI)
 API_HOST = "football98.p.rapidapi.com"
-BASE_URL = "https://football98.p.rapidapi.com"
+BASE_URL = "https://v3.football.api-sports.io"
 # ─────────────────────────────────────────────────────────────
 
-HEADERS = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST}
+HEADERS = {"x-apisports-key": API_KEY}
 N_SIMULATIONS = 10_000
-
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
     page_title="Football Oracle",
