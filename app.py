@@ -1,15 +1,6 @@
 # ================================================================
-#  FOOTBALL ORACLE PRO v3.0 — Arquitectura Multi-API Robusta
-#  5 fuentes | Monte Carlo 10,000 | Latam + Europa + Mundial
-#  Fallback automatico | Sugerencias de apuesta | 45 dias
-# ================================================================
-#
-#  FUENTES GRATUITAS:
-#  1. football-data.org   — Europa + UCL + World Cup
-#  2. api-sports.io       — Global (Latam, Asia, Africa)
-#  3. the-odds-api.com    — Cuotas en vivo (500 req/mes gratis)
-#  4. open-meteo.com      — Clima del estadio (sin key)
-#  5. clubelo.com         — Elo ratings de selecciones (sin key)
+#  FOOTBALL ORACLE PRO v3.5 — Versión Definitiva
+#  Multi-API | Deep Data | Monte Carlo con Varianza | Kelly
 # ================================================================
 
 import streamlit as st
@@ -17,1172 +8,1202 @@ import requests
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-import json
 import math
 
-# ── KEYS ─────────────────────────────────────────────────────────
-FD_KEY    = "a2aef808a68d4cd6ba2ad97f9953ec81"   # football-data.org  → football-data.org/client/register
-APISPORTS = "70cb24441a57cc0a28c2fd7dd3b76110"   # api-sports.io      → dashboard.api-sports.io
-ODDS_KEY  = "f028e4d3689b54c609ce7137fc6a40ba"   # the-odds-api.com   → the-odds-api.com/#get-access
-# open-meteo y clubelo no necesitan key
-# ─────────────────────────────────────────────────────────────────
+# ================================================================
+#  KEYS — Integradas y listas para usar
+# ================================================================
+FD_KEY    = "a2aef808a68d4cd6ba2ad97f9953ec81"   # football-data.org
+APISPORTS = "70cb24441a57cc0a28c2fd7dd3b76110"   # api-sports.io
+ODDS_KEY  = "f028e4d3689b54c609ce7137fc6a40ba"   # the-odds-api.com
+# open-meteo.com — sin key necesaria
+# ================================================================
 
 N_SIM      = 10_000
-DAYS_AHEAD = 45   # ventana de busqueda de partidos
+DAYS_AHEAD = 45
 
-def _secret(k, f=""):
-    try:    return st.secrets.get(k, f)
-    except: return f
+# ── Lectura de Secrets de Streamlit (override opcional) ──────────
+def _s(k, d=""):
+    try:    return st.secrets.get(k, d)
+    except: return d
 
-def get_fd_key():   return st.session_state.get("fd_key",   _secret("FD_KEY",   FD_KEY))
-def get_as_key():   return st.session_state.get("as_key",   _secret("APISPORTS",APISPORTS))
-def get_odds_key(): return st.session_state.get("odds_key", _secret("ODDS_KEY", ODDS_KEY))
+FD_KEY    = _s("FD_KEY",    FD_KEY)
+APISPORTS = _s("APISPORTS", APISPORTS)
+ODDS_KEY  = _s("ODDS_KEY",  ODDS_KEY)
+
+FD_HDR = {"X-Auth-Token": FD_KEY}
+AS_HDR = {"x-apisports-key": APISPORTS}
+FD_BASE = "https://api.football-data.org/v4"
+AS_BASE = "https://v3.football.api-sports.io"
+OD_BASE = "https://api.the-odds-api.com/v4"
 
 # ================================================================
-st.set_page_config(page_title="Football Oracle PRO", page_icon="⚽",
-                   layout="wide", initial_sidebar_state="expanded")
+#  LIGAS — Solo las de valor
+# ================================================================
+LIGAS = {
+    "Liga BetPlay Dimayor (COL)":    {"as_id": 239, "fd_code": None,  "season": 2025, "region": "Latinoamerica"},
+    "Liga Profesional (ARG)":        {"as_id": 128, "fd_code": None,  "season": 2025, "region": "Latinoamerica"},
+    "Serie A Brasileirao (BRA)":     {"as_id": 71,  "fd_code": None,  "season": 2025, "region": "Latinoamerica"},
+    "UEFA Champions League":         {"as_id": 2,   "fd_code": "CL",  "season": 2024, "region": "Internacional"},
+    "Premier League (ENG)":          {"as_id": 39,  "fd_code": "PL",  "season": 2024, "region": "Internacional"},
+    "La Liga (ESP)":                 {"as_id": 140, "fd_code": "PD",  "season": 2024, "region": "Internacional"},
+    "FIFA Mundial 2026":             {"as_id": 1,   "fd_code": None,  "season": 2026, "region": "Internacional"},
+}
+
+ODDS_MAP = {
+    "Liga BetPlay Dimayor (COL)":   "soccer_colombia_primera_a",
+    "Liga Profesional (ARG)":       "soccer_argentina_primera_division",
+    "Serie A Brasileirao (BRA)":    "soccer_brazil_campeonato",
+    "UEFA Champions League":        "soccer_uefa_champs_league",
+    "Premier League (ENG)":         "soccer_england_league1",
+    "La Liga (ESP)":                "soccer_spain_la_liga",
+}
+
+COORDENADAS = {
+    "Liga BetPlay Dimayor (COL)":   ( 4.71, -74.07),
+    "Liga Profesional (ARG)":       (-34.60, -58.44),
+    "Serie A Brasileirao (BRA)":    (-23.54, -46.63),
+    "UEFA Champions League":        ( 51.50,  -0.12),
+    "Premier League (ENG)":         ( 51.50,  -0.12),
+    "La Liga (ESP)":                ( 40.45,  -3.69),
+    "FIFA Mundial 2026":            ( 29.76, -95.37),
+}
+
+# ================================================================
+#  STREAMLIT CONFIG & CSS
+# ================================================================
+st.set_page_config(
+    page_title="Football Oracle PRO v3.5",
+    page_icon="⚽", layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;700&display=swap');
 *{box-sizing:border-box;}
 html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
-.stApp{background:#07070f;color:#e2e2f0;}
-.hero{background:linear-gradient(135deg,#0d0d1c,#180808);border:1px solid #252535;
-  border-radius:18px;padding:32px 36px 24px;margin-bottom:28px;position:relative;overflow:hidden;}
-.hero::after{content:'';position:absolute;top:-80px;right:-80px;width:300px;height:300px;
-  background:radial-gradient(circle,rgba(244,98,42,.12),transparent 70%);}
-.hero h1{font-family:'Bebas Neue',sans-serif;font-size:clamp(2rem,6vw,3.2rem);
-  color:#f4622a;letter-spacing:3px;line-height:.95;}
-.hero .sub{color:#606080;font-size:.82rem;margin-top:8px;}
-.apis{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
-.pill{background:#13131f;border:1px solid #252535;border-radius:99px;
-  padding:3px 10px;font-size:.7rem;color:#7070a0;}
-.pill.on{border-color:#3ecf8e44;color:#3ecf8e;background:rgba(62,207,142,.08);}
-.pill.off{border-color:#f4622a33;color:#f4622a55;}
-.sec{font-family:'Bebas Neue',sans-serif;font-size:1.3rem;color:#f4622a;
-  letter-spacing:2px;border-bottom:1px solid #1e1e2e;padding-bottom:5px;margin:22px 0 14px;}
-.kpi{background:#0f0f1c;border:1px solid #1e1e2e;border-radius:12px;
-  padding:14px 16px;text-align:center;margin-bottom:6px;}
-.kpi-val{font-family:'Bebas Neue',sans-serif;font-size:2rem;color:#f5c842;line-height:1.1;}
-.kpi-lbl{font-size:.63rem;color:#404060;letter-spacing:2px;text-transform:uppercase;margin-top:2px;}
-.pc{border-radius:12px;padding:15px 18px;margin-bottom:9px;
-  display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
-.pc-high{background:#09150f;border:1px solid #3ecf8e33;}
-.pc-med{background:#141108;border:1px solid #f5c84233;}
-.pc-low{background:#150808;border:1px solid #f4622a33;}
-.pc-mkt{font-size:.65rem;color:#404060;letter-spacing:2px;text-transform:uppercase;min-width:115px;}
-.pc-pick{font-weight:600;font-size:.9rem;flex:1;}
-.pc-det{font-size:.72rem;color:#505070;margin-top:2px;}
-.badge{display:inline-block;border-radius:6px;padding:2px 9px;
-  font-size:.68rem;font-weight:700;letter-spacing:.5px;margin-top:3px;}
-.b-high{background:rgba(62,207,142,.15);color:#3ecf8e;}
-.b-med{background:rgba(245,200,66,.12);color:#f5c842;}
-.b-low{background:rgba(244,98,42,.15);color:#f4622a;}
-/* Bet suggestion */
-.bet-box{background:linear-gradient(135deg,#0f1a0f,#0a1208);
-  border:2px solid #3ecf8e55;border-radius:14px;padding:20px 24px;margin:12px 0;}
-.bet-box h3{font-family:'Bebas Neue',sans-serif;color:#3ecf8e;font-size:1.4rem;
-  letter-spacing:2px;margin-bottom:10px;}
+.stApp{background:#06060e;color:#e2e2f0;}
+
+.hero{
+  background:linear-gradient(135deg,#0c0c1e 0%,#160808 100%);
+  border:1px solid #20203a;border-radius:20px;
+  padding:36px 40px 28px;margin-bottom:30px;
+  position:relative;overflow:hidden;
+}
+.hero::before{
+  content:'';position:absolute;top:-100px;right:-100px;
+  width:400px;height:400px;
+  background:radial-gradient(circle,rgba(244,98,42,.10) 0%,transparent 65%);
+}
+.hero::after{
+  content:'ORACLE';position:absolute;bottom:-20px;right:20px;
+  font-family:'Bebas Neue',sans-serif;font-size:9rem;
+  color:rgba(244,98,42,.04);letter-spacing:8px;pointer-events:none;
+}
+.hero h1{font-family:'Bebas Neue',sans-serif;font-size:clamp(2rem,5vw,3.2rem);
+  color:#f4622a;letter-spacing:3px;line-height:.9;margin:0;}
+.hero .ver{font-size:.75rem;color:#f4622a88;letter-spacing:4px;margin-bottom:8px;}
+.hero .sub{color:#50507a;font-size:.82rem;margin-top:10px;letter-spacing:.3px;}
+.api-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;}
+.apill{padding:3px 10px;border-radius:99px;font-size:.68rem;font-weight:600;letter-spacing:.5px;}
+.apill-on{background:rgba(62,207,142,.1);color:#3ecf8e;border:1px solid #3ecf8e44;}
+.apill-off{background:rgba(244,98,42,.08);color:#f4622a55;border:1px solid #f4622a22;}
+
+.sec{font-family:'Bebas Neue',sans-serif;font-size:1.25rem;color:#f4622a;
+  letter-spacing:3px;border-bottom:1px solid #18182a;padding-bottom:6px;margin:24px 0 16px;}
+
+.kpi{background:#0c0c1c;border:1px solid #1a1a2e;border-radius:14px;
+  padding:16px;text-align:center;margin-bottom:8px;}
+.kv{font-family:'Bebas Neue',sans-serif;font-size:2.1rem;color:#f5c842;line-height:1.1;}
+.kl{font-size:.62rem;color:#35354a;letter-spacing:2px;text-transform:uppercase;margin-top:3px;}
+
+.match-box{background:#0c0c1c;border:1px solid #1a1a2e;border-radius:16px;
+  padding:24px;text-align:center;margin:16px 0;}
+.tn{font-family:'Bebas Neue',sans-serif;font-size:1.8rem;color:#e2e2f0;}
+.vs{font-family:'Bebas Neue',sans-serif;font-size:2.4rem;color:#f4622a;margin:0 8px;}
+.match-meta{color:#30304a;font-size:.78rem;margin-top:6px;}
+
+.pc{border-radius:14px;padding:16px 20px;margin-bottom:10px;
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
+.pc-h{background:#08140c;border:1px solid #3ecf8e2a;}
+.pc-m{background:#14120a;border:1px solid #f5c8422a;}
+.pc-l{background:#14080a;border:1px solid #f4622a2a;}
+.pmkt{font-size:.62rem;color:#30304a;letter-spacing:2px;text-transform:uppercase;min-width:120px;}
+.ppick{font-weight:600;font-size:.92rem;flex:1;}
+.pdet{font-size:.72rem;color:#40406a;margin-top:3px;}
+.pbadge{display:inline-block;border-radius:6px;padding:3px 10px;
+  font-size:.68rem;font-weight:700;letter-spacing:.5px;margin-top:4px;}
+.ph{background:rgba(62,207,142,.12);color:#3ecf8e;}
+.pm{background:rgba(245,200,66,.1);color:#f5c842;}
+.pl{background:rgba(244,98,42,.12);color:#f4622a;}
+
+.bet-box{
+  background:linear-gradient(135deg,#08160c,#060e08);
+  border:2px solid #3ecf8e44;border-radius:16px;
+  padding:24px 28px;margin:14px 0;
+}
+.bet-title{font-family:'Bebas Neue',sans-serif;color:#3ecf8e;
+  font-size:1.5rem;letter-spacing:3px;margin-bottom:14px;}
 .bet-row{display:flex;justify-content:space-between;align-items:center;
-  padding:6px 0;border-bottom:1px solid #1a2a1a;}
+  padding:7px 0;border-bottom:1px solid #0f1f12;}
 .bet-row:last-child{border-bottom:none;}
-.bet-label{font-size:.82rem;color:#8080a0;}
-.bet-val{font-family:'Bebas Neue',sans-serif;font-size:1.2rem;color:#f5c842;}
-.stake-rec{background:#0a1f0a;border:1px solid #3ecf8e44;border-radius:8px;
-  padding:10px 14px;margin-top:10px;font-size:.82rem;color:#80d080;}
-.warning-bet{background:#1a0808;border:1px solid #f4622a44;border-radius:8px;
-  padding:10px 14px;margin-top:10px;font-size:.8rem;color:#d08080;}
-.prow{margin:7px 0;}
-.prow-lbl{font-size:.78rem;color:#8080a0;margin-bottom:2px;}
-.pbar{background:#151525;border-radius:99px;height:9px;overflow:hidden;}
-.pfill{height:100%;border-radius:99px;}
-.match{background:#0f0f1c;border:1px solid #1e1e2e;border-radius:14px;
-  padding:20px;text-align:center;margin:14px 0;}
-.tn{font-family:'Bebas Neue',sans-serif;font-size:1.7rem;color:#e2e2f0;}
-.vs{font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:#f4622a;}
-.src-tag{font-size:.65rem;background:#13131f;border:1px solid #1e1e2e;
-  border-radius:4px;padding:1px 6px;color:#505070;}
-.elo-box{background:#0f0f1c;border:1px solid #252535;border-radius:10px;
-  padding:10px 16px;margin:8px 0;font-size:.82rem;}
+.bl{font-size:.8rem;color:#50507a;}
+.bv{font-family:'Bebas Neue',sans-serif;font-size:1.3rem;color:#f5c842;}
+.value-yes{background:rgba(62,207,142,.12);border:1px solid #3ecf8e33;
+  border-radius:8px;padding:8px 14px;margin-top:10px;font-size:.8rem;color:#3ecf8e;}
+.value-no{background:rgba(244,98,42,.08);border:1px solid #f4622a22;
+  border-radius:8px;padding:8px 14px;margin-top:10px;font-size:.8rem;color:#f4622a88;}
+.combo-box{background:#091409;border:1px solid #3ecf8e22;
+  border-radius:10px;padding:14px;margin-top:14px;}
+.bet-warn{background:#140a0a;border:1px solid #f4622a22;
+  border-radius:8px;padding:10px 14px;margin-top:12px;font-size:.78rem;color:#80506a;line-height:1.5;}
+
+.pbar-wrap{background:#0f0f1f;border-radius:99px;height:10px;overflow:hidden;}
+.pbar-fill{height:100%;border-radius:99px;}
+.prow{margin:8px 0;}
+.prow-lbl{font-size:.78rem;color:#60608a;margin-bottom:3px;}
+
+.dq-bar{height:6px;border-radius:99px;margin-top:4px;}
+.src-chip{display:inline-block;background:#0f0f1f;border:1px solid #1a1a2e;
+  border-radius:4px;padding:1px 7px;font-size:.65rem;color:#40406a;margin-left:6px;}
+.warn-data{background:#140e04;border-left:3px solid #f5c842;
+  border-radius:0 8px 8px 0;padding:10px 14px;font-size:.8rem;color:#a09060;margin:8px 0;}
+
 .stButton>button{background:#f4622a!important;color:#fff!important;
-  border:none!important;border-radius:10px!important;font-weight:700!important;
-  padding:13px 20px!important;width:100%!important;font-size:.95rem!important;letter-spacing:1px!important;}
-.stButton>button:hover{background:#c04a1e!important;}
+  border:none!important;border-radius:12px!important;font-weight:700!important;
+  padding:14px 20px!important;width:100%!important;font-size:.95rem!important;
+  letter-spacing:1px!important;transition:.2s!important;}
+.stButton>button:hover{background:#d0501e!important;transform:translateY(-1px)!important;}
 #MainMenu,footer,header{visibility:hidden;}
 </style>
 """, unsafe_allow_html=True)
 
 # ================================================================
-#  LIGAS — DICCIONARIOS COMPLETOS
+#  CAPA DE DATOS — SOURCE 1: football-data.org
 # ================================================================
-
-# football-data.org competition codes
-FD_COMPETITIONS = {
-    # Europa
-    "Premier League (ENG)":          "PL",
-    "La Liga (ESP)":                  "PD",
-    "Bundesliga (GER)":               "BL1",
-    "Serie A (ITA)":                  "SA",
-    "Ligue 1 (FRA)":                  "FL1",
-    "Eredivisie (NED)":               "DED",
-    "Primeira Liga (POR)":            "PPL",
-    "Championship (ENG)":             "ELC",
-    # Europa continental
-    "UEFA Champions League":          "CL",
-    "UEFA Europa League":             "EL",
-    # Latinoamerica
-    "Copa Libertadores":              "CLI",
-    # Clasificatorias y selecciones
-    "World Cup Qualifying (S.Amer)":  "WC",
-    "FIFA World Cup 2026":            "WC",
-    "Euro / Nations League":          "EC",
-}
-
-# api-sports.io league IDs — fuente primaria para Latam
-AS_LEAGUES = {
-    # Europa
-    "Premier League (ENG)":          {"id": 39,  "season": 2024},
-    "La Liga (ESP)":                  {"id": 140, "season": 2024},
-    "Bundesliga (GER)":               {"id": 78,  "season": 2024},
-    "Serie A (ITA)":                  {"id": 135, "season": 2024},
-    "Ligue 1 (FRA)":                  {"id": 61,  "season": 2024},
-    "Eredivisie (NED)":               {"id": 88,  "season": 2024},
-    "Primeira Liga (POR)":            {"id": 94,  "season": 2024},
-    "Championship (ENG)":             {"id": 40,  "season": 2024},
-    # Europa continental
-    "UEFA Champions League":          {"id": 2,   "season": 2024},
-    "UEFA Europa League":             {"id": 3,   "season": 2024},
-    "UEFA Europa Conference League":  {"id": 848, "season": 2024},
-    # LATAM — cobertura completa en api-sports
-    "Liga BetPlay (COL)":             {"id": 239, "season": 2025},
-    "Liga Profesional (ARG)":         {"id": 128, "season": 2025},
-    "Serie A Brasil (BRA)":           {"id": 71,  "season": 2025},
-    "Liga MX (MEX)":                  {"id": 262, "season": 2025},
-    "Primera Division (CHI)":         {"id": 265, "season": 2025},
-    "Liga 1 (PER)":                   {"id": 268, "season": 2025},
-    "Primera Division (URU)":         {"id": 278, "season": 2025},
-    "Copa Libertadores":              {"id": 13,  "season": 2025},
-    "Copa Sudamericana":              {"id": 11,  "season": 2025},
-    # Clasificatorias Mundialistas
-    "World Cup Qualifying (S.Amer)":  {"id": 29,  "season": 2025},
-    "World Cup Qualifying (EUR)":     {"id": 32,  "season": 2025},
-    "World Cup Qualifying (CONC)":    {"id": 31,  "season": 2025},
-    "World Cup Qualifying (AFR)":     {"id": 30,  "season": 2025},
-    "World Cup Qualifying (ASIA)":    {"id": 36,  "season": 2025},
-    # Mundiales y torneos de selecciones
-    "FIFA World Cup 2026":            {"id": 1,   "season": 2026},
-    "Copa America":                   {"id": 9,   "season": 2024},
-    "Euro / Nations League":          {"id": 5,   "season": 2024},
-    "Africa Cup of Nations":          {"id": 6,   "season": 2025},
-    "CONCACAF Gold Cup":              {"id": 20,  "season": 2025},
-    # USA
-    "MLS (USA)":                      {"id": 253, "season": 2025},
-}
-
-# Prioridad de fuente por liga: "fd" primero o "as" primero
-# Latam y selecciones usan as primero; Europa usa fd primero
-AS_PRIORITY_LEAGUES = {
-    "Liga BetPlay (COL)", "Liga Profesional (ARG)", "Serie A Brasil (BRA)",
-    "Liga MX (MEX)", "Primera Division (CHI)", "Liga 1 (PER)",
-    "Primera Division (URU)", "Copa Libertadores", "Copa Sudamericana",
-    "World Cup Qualifying (S.Amer)", "World Cup Qualifying (EUR)",
-    "World Cup Qualifying (CONC)", "World Cup Qualifying (AFR)",
-    "World Cup Qualifying (ASIA)", "FIFA World Cup 2026",
-    "Copa America", "Africa Cup of Nations", "CONCACAF Gold Cup", "MLS (USA)",
-}
-
-ODDS_SPORT_MAP = {
-    "Premier League (ENG)":   "soccer_england_league1",
-    "La Liga (ESP)":           "soccer_spain_la_liga",
-    "Bundesliga (GER)":        "soccer_germany_bundesliga",
-    "Serie A (ITA)":           "soccer_italy_serie_a",
-    "Ligue 1 (FRA)":           "soccer_france_ligue_one",
-    "UEFA Champions League":   "soccer_uefa_champs_league",
-    "UEFA Europa League":      "soccer_uefa_europa_league",
-    "FIFA World Cup 2026":     "soccer_fifa_world_cup",
-    "Liga BetPlay (COL)":      "soccer_colombia_primera_a",
-    "Liga Profesional (ARG)":  "soccer_argentina_primera_division",
-    "Serie A Brasil (BRA)":    "soccer_brazil_campeonato",
-    "MLS (USA)":               "soccer_usa_mls",
-}
-
-STADIUM_COORDS = {
-    "Premier League (ENG)":   (51.50, -0.12),
-    "Championship (ENG)":     (51.50, -0.12),
-    "La Liga (ESP)":           (40.45, -3.69),
-    "Bundesliga (GER)":        (48.21, 11.62),
-    "Serie A (ITA)":           (45.47,  9.12),
-    "Ligue 1 (FRA)":           (48.85,  2.35),
-    "Eredivisie (NED)":        (52.31,  4.94),
-    "Primeira Liga (POR)":     (38.75, -9.18),
-    "UEFA Champions League":   (51.50, -0.12),
-    "UEFA Europa League":      (51.50, -0.12),
-    "Liga BetPlay (COL)":      ( 4.71,-74.07),  # Bogota
-    "Liga Profesional (ARG)":  (-34.6,-58.44),  # Buenos Aires
-    "Serie A Brasil (BRA)":    (-23.5,-46.63),  # Sao Paulo
-    "Liga MX (MEX)":           (19.43,-99.13),
-    "Primera Division (CHI)":  (-33.4,-70.65),  # Santiago
-    "Liga 1 (PER)":            (-12.0,-77.03),  # Lima
-    "Primera Division (URU)":  (-34.9,-56.17),  # Montevideo
-    "Copa Libertadores":       (-23.5,-46.63),
-    "Copa Sudamericana":       (-23.5,-46.63),
-    "World Cup Qualifying (S.Amer)": (-34.6,-58.44),
-    "FIFA World Cup 2026":     (29.76,-95.37),  # Houston
-    "Copa America":            (25.77,-80.19),  # Miami
-    "MLS (USA)":               (34.05,-118.24),
-}
-
-# ================================================================
-#  SOURCE 1: football-data.org
-# ================================================================
-FD_BASE = "https://api.football-data.org/v4"
-
-def _fd_headers():
-    return {"X-Auth-Token": get_fd_key()}
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fd_get_fixtures(comp_code):
-    if not get_fd_key(): return []
+def fd_partidos(fd_code, season=None):
+    if not fd_code: return []
     today  = datetime.now().strftime("%Y-%m-%d")
-    future = (datetime.now() + timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
+    futuro = (datetime.now() + timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
     try:
-        r = requests.get(f"{FD_BASE}/competitions/{comp_code}/matches",
-                         headers=_fd_headers(),
-                         params={"dateFrom": today, "dateTo": future, "status": "SCHEDULED"},
-                         timeout=12)
+        r = requests.get(
+            f"{FD_BASE}/competitions/{fd_code}/matches",
+            headers=FD_HDR,
+            params={"dateFrom": today, "dateTo": futuro, "status": "SCHEDULED"},
+            timeout=14
+        )
         if r.status_code != 200: return []
-        result = []
+        resultado = []
         for m in r.json().get("matches", []):
-            home    = m.get("homeTeam",{}).get("shortName") or m.get("homeTeam",{}).get("name","?")
-            away    = m.get("awayTeam",{}).get("shortName") or m.get("awayTeam",{}).get("name","?")
-            home_id = m.get("homeTeam",{}).get("id")
-            away_id = m.get("awayTeam",{}).get("id")
-            date_s  = m.get("utcDate","")[:10]
-            result.append({"id":m.get("id"),"date":date_s,"home":home,"away":away,
-                           "home_id":home_id,"away_id":away_id,"comp":comp_code,
-                           "source":"football-data.org",
-                           "home_id_fd":home_id,"away_id_fd":away_id,
-                           "home_id_as":None,"away_id_as":None,
-                           "display":f"📅 {date_s}  |  {home}  vs  {away}"})
-        return result
+            home = m.get("homeTeam",{}).get("shortName") or m.get("homeTeam",{}).get("name","?")
+            away = m.get("awayTeam",{}).get("shortName") or m.get("awayTeam",{}).get("name","?")
+            resultado.append({
+                "id":       m.get("id"),
+                "fecha":    m.get("utcDate","")[:10],
+                "local":    home,
+                "visita":   away,
+                "id_local_fd":   m.get("homeTeam",{}).get("id"),
+                "id_visita_fd":  m.get("awayTeam",{}).get("id"),
+                "id_local_as":   None,
+                "id_visita_as":  None,
+                "fuente":   "football-data.org",
+                "display":  f"📅 {m.get('utcDate','')[:10]}  |  {home}  vs  {away}",
+            })
+        return resultado
     except: return []
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fd_get_team_matches(team_id, limit=20):
-    if not get_fd_key() or not team_id: return []
+def fd_historial(team_id, limit=50):
+    if not team_id: return []
     try:
-        r = requests.get(f"{FD_BASE}/teams/{team_id}/matches",
-                         headers=_fd_headers(),
-                         params={"status":"FINISHED","limit":limit}, timeout=12)
+        r = requests.get(
+            f"{FD_BASE}/teams/{team_id}/matches",
+            headers=FD_HDR,
+            params={"status": "FINISHED", "limit": limit},
+            timeout=14
+        )
         if r.status_code != 200: return []
-        return r.json().get("matches",[])
+        return r.json().get("matches", [])
     except: return []
 
 # ================================================================
-#  SOURCE 2: api-sports.io
+#  CAPA DE DATOS — SOURCE 2: api-sports.io
 # ================================================================
-AS_BASE = "https://v3.football.api-sports.io"
-
-def _as_headers():
-    return {"x-apisports-key": get_as_key()}
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def as_get_fixtures(league_id, season):
-    if not get_as_key(): return []
+def as_partidos(league_id, season):
     today  = datetime.now().strftime("%Y-%m-%d")
-    future = (datetime.now() + timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
-    strategies = [
-        {"league":league_id,"season":season,"from":today,"to":future},
-        {"league":league_id,"season":season,"from":today,"to":future,"status":"NS"},
-        {"league":league_id,"season":season},
+    futuro = (datetime.now() + timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
+    estrategias = [
+        {"league": league_id, "season": season, "from": today, "to": futuro},
+        {"league": league_id, "season": season, "status": "NS", "from": today, "to": futuro},
+        {"league": league_id, "season": season},
     ]
-    for params in strategies:
+    for params in estrategias:
         try:
-            r = requests.get(f"{AS_BASE}/fixtures", headers=_as_headers(),
-                             params=params, timeout=12)
+            r = requests.get(f"{AS_BASE}/fixtures", headers=AS_HDR,
+                             params=params, timeout=14)
             data = r.json()
-            errors = data.get("errors",{})
-            if errors and errors not in ([],{}): continue
-            items = data.get("response",[])
+            errs = data.get("errors", {})
+            if errs and errs not in ([], {}): continue
+            items = data.get("response", [])
             if not items: continue
-            result = []
+            resultado = []
             for f in items:
-                fix   = f.get("fixture",{})
-                teams = f.get("teams",{})
-                st_s  = fix.get("status",{}).get("short","")
-                if st_s in ("FT","AET","PEN","CANC","ABD","PST","WO"): continue
+                fix   = f.get("fixture", {})
+                teams = f.get("teams",   {})
+                if fix.get("status",{}).get("short","") in ("FT","AET","PEN","CANC","ABD","PST"): continue
                 home = teams.get("home",{}).get("name","?")
                 away = teams.get("away",{}).get("name","?")
-                home_id = teams.get("home",{}).get("id")
-                away_id = teams.get("away",{}).get("id")
-                date_s = fix.get("date","")[:10]
-                result.append({"id":fix.get("id"),"date":date_s,"home":home,"away":away,
-                               "home_id":home_id,"away_id":away_id,"season":season,
-                               "source":"api-sports.io",
-                               "home_id_as":home_id,"away_id_as":away_id,
-                               "home_id_fd":None,"away_id_fd":None,
-                               "display":f"📅 {date_s}  |  {home}  vs  {away}"})
-            if result: return result
+                fecha = fix.get("date","")[:10]
+                resultado.append({
+                    "id":          fix.get("id"),
+                    "fecha":       fecha,
+                    "local":       home,
+                    "visita":      away,
+                    "id_local_as":  teams.get("home",{}).get("id"),
+                    "id_visita_as": teams.get("away",{}).get("id"),
+                    "id_local_fd":  None,
+                    "id_visita_fd": None,
+                    "fuente":      "api-sports.io",
+                    "display":     f"📅 {fecha}  |  {home}  vs  {away}",
+                })
+            if resultado: return resultado
         except: continue
     return []
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def as_get_stats(team_id, league_id, season):
-    if not get_as_key() or not team_id: return {}
-    for s in [season, season-1, season+1]:
+def as_estadisticas(team_id, league_id, season):
+    """Carga estadísticas multi-temporada: actual + anterior si datos bajos."""
+    if not team_id: return {}
+    resultados = []
+    for s in [season, season - 1, season + 1]:
         try:
-            r = requests.get(f"{AS_BASE}/teams/statistics", headers=_as_headers(),
-                             params={"team":team_id,"league":league_id,"season":s}, timeout=12)
-            d = r.json().get("response",{})
-            if d: return d
+            r = requests.get(f"{AS_BASE}/teams/statistics", headers=AS_HDR,
+                             params={"team": team_id, "league": league_id, "season": s},
+                             timeout=12)
+            d = r.json().get("response", {})
+            if d:
+                jugados = _f(d.get("fixtures",{}).get("played",{}).get("total", 0))
+                resultados.append({"data": d, "jugados": jugados, "season": s})
         except: continue
-    return {}
+    if not resultados: return {}
+    # Retorna el mas completo, o fusiona si el actual tiene pocos datos
+    resultados.sort(key=lambda x: -x["jugados"])
+    if len(resultados) >= 2 and resultados[0]["jugados"] < 8:
+        # Fusionar los dos primeros
+        return _fusionar_stats(resultados[0]["data"], resultados[1]["data"])
+    return resultados[0]["data"]
+
+def _fusionar_stats(s1, s2):
+    """Fusiona dos objetos de estadísticas ponderando por partidos jugados."""
+    j1 = max(1, _f(s1.get("fixtures",{}).get("played",{}).get("total",0)))
+    j2 = max(1, _f(s2.get("fixtures",{}).get("played",{}).get("total",0)))
+    w1 = j1 / (j1 + j2)
+    w2 = j2 / (j1 + j2)
+    # Para goals averages, fusionamos manualmente
+    fusion = dict(s1)
+    for venue in ["home", "away", "total"]:
+        try:
+            gf1 = _f(s1.get("goals",{}).get("for",{}).get("average",{}).get(venue, 0))
+            gf2 = _f(s2.get("goals",{}).get("for",{}).get("average",{}).get(venue, 0))
+            ga1 = _f(s1.get("goals",{}).get("against",{}).get("average",{}).get(venue, 0))
+            ga2 = _f(s2.get("goals",{}).get("against",{}).get("average",{}).get(venue, 0))
+            if "goals" not in fusion: fusion["goals"] = {}
+            if "for"     not in fusion["goals"]: fusion["goals"]["for"] = {}
+            if "against" not in fusion["goals"]: fusion["goals"]["against"] = {}
+            if "average" not in fusion["goals"]["for"]:     fusion["goals"]["for"]["average"] = {}
+            if "average" not in fusion["goals"]["against"]: fusion["goals"]["against"]["average"] = {}
+            fusion["goals"]["for"]["average"][venue]     = round(gf1*w1 + gf2*w2, 3)
+            fusion["goals"]["against"]["average"][venue] = round(ga1*w1 + ga2*w2, 3)
+        except: pass
+    fusion["_fusionado"] = True
+    fusion["_j1"] = j1; fusion["_j2"] = j2
+    return fusion
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def as_search_team(team_name):
-    """Search team by name to get AS id — bridges FD <-> AS."""
-    if not get_as_key(): return None
+def as_ultimos(team_id, season, n=20):
+    if not team_id: return []
+    for s in [season, season - 1]:
+        try:
+            r = requests.get(f"{AS_BASE}/fixtures", headers=AS_HDR,
+                             params={"team": team_id, "season": s,
+                                     "status": "FT", "last": n}, timeout=12)
+            d = r.json().get("response", [])
+            if d: return d
+        except: continue
+    return []
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def as_buscar_equipo(nombre):
+    """Busca un equipo por nombre para sincronizar IDs entre fuentes."""
     try:
-        r = requests.get(f"{AS_BASE}/teams", headers=_as_headers(),
-                         params={"search": team_name[:10]}, timeout=10)
-        teams = r.json().get("response",[])
-        if teams:
-            return teams[0].get("team",{}).get("id")
+        r = requests.get(f"{AS_BASE}/teams", headers=AS_HDR,
+                         params={"search": nombre[:12]}, timeout=10)
+        equipos = r.json().get("response", [])
+        if equipos:
+            return equipos[0].get("team", {}).get("id")
     except: pass
     return None
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def as_get_last_fixtures(team_id, season, n=15):
-    if not get_as_key() or not team_id: return []
-    for s in [season, season-1]:
-        try:
-            r = requests.get(f"{AS_BASE}/fixtures", headers=_as_headers(),
-                             params={"team":team_id,"season":s,"status":"FT","last":n}, timeout=12)
-            d = r.json().get("response",[])
-            if d: return d
-        except: continue
-    return []
-
 # ================================================================
-#  SOURCE 3: the-odds-api.com
+#  CAPA DE DATOS — SOURCE 3: the-odds-api
 # ================================================================
-ODDS_BASE = "https://api.the-odds-api.com/v4"
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def get_odds(sport_key, home_team, away_team):
-    if not get_odds_key() or not sport_key: return None
+def obtener_cuotas(sport_key, local, visita):
+    if not sport_key or not ODDS_KEY: return None
     try:
-        r = requests.get(f"{ODDS_BASE}/sports/{sport_key}/odds",
-                         params={"apiKey":get_odds_key(),"regions":"eu",
-                                 "markets":"h2h,totals","oddsFormat":"decimal"}, timeout=12)
+        r = requests.get(f"{OD_BASE}/sports/{sport_key}/odds",
+                         params={"apiKey": ODDS_KEY, "regions": "eu",
+                                 "markets": "h2h,totals", "oddsFormat": "decimal"},
+                         timeout=12)
         if r.status_code != 200: return None
-        ht = home_team.lower(); at = away_team.lower()
+        hl = local.lower(); al = visita.lower()
         for ev in r.json():
-            ht2 = ev.get("home_team","").lower()
-            at2 = ev.get("away_team","").lower()
-            if (ht[:5] in ht2 or ht2[:5] in ht) and (at[:5] in at2 or at2[:5] in at):
-                bk = (ev.get("bookmakers") or [{}])[0]
-                res = {"home":home_team,"away":away_team,"bookmaker":bk.get("title","")}
-                for mkt in bk.get("markets",[]):
-                    if mkt["key"]=="h2h":
-                        for o in mkt.get("outcomes",[]):
+            h2 = ev.get("home_team","").lower()
+            a2 = ev.get("away_team","").lower()
+            if (hl[:6] in h2 or h2[:6] in hl) and (al[:6] in a2 or a2[:6] in al):
+                bk  = (ev.get("bookmakers") or [{}])[0]
+                res = {"local": local, "visita": visita,
+                       "casa": bk.get("title",""), "sport": sport_key}
+                for mkt in bk.get("markets", []):
+                    if mkt["key"] == "h2h":
+                        for o in mkt.get("outcomes", []):
                             n = o["name"].lower()
-                            if ht[:5] in n:  res["odd_home"]=o["price"]
-                            elif "draw" in n: res["odd_draw"]=o["price"]
-                            else:            res["odd_away"]=o["price"]
-                    elif mkt["key"]=="totals":
-                        for o in mkt.get("outcomes",[]):
-                            if o["name"]=="Over":  res["odd_over25"]=o["price"]
-                            elif o["name"]=="Under":res["odd_under25"]=o["price"]
+                            if hl[:5] in n:   res["cuota_local"]  = o["price"]
+                            elif "draw" in n: res["cuota_empate"] = o["price"]
+                            else:             res["cuota_visita"] = o["price"]
+                    elif mkt["key"] == "totals":
+                        for o in mkt.get("outcomes", []):
+                            if o["name"] == "Over":  res["cuota_o25"] = o["price"]
+                            elif o["name"]=="Under": res["cuota_u25"] = o["price"]
                 return res
-        return None
-    except: return None
-
-# ================================================================
-#  SOURCE 4: open-meteo (sin key)
-# ================================================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_weather(lat=51.5, lon=-0.1):
-    try:
-        r = requests.get("https://api.open-meteo.com/v1/forecast",
-                         params={"latitude":lat,"longitude":lon,
-                                 "current":"temperature_2m,precipitation,windspeed_10m,weathercode",
-                                 "timezone":"auto"}, timeout=8)
-        c = r.json().get("current",{})
-        code = c.get("weathercode",0)
-        cond = ("Despejado" if code<3 else "Nublado" if code<50
-                else "Lluvioso" if code<80 else "Tormenta")
-        return {"temp":c.get("temperature_2m","?"),"rain":c.get("precipitation",0),
-                "wind":c.get("windspeed_10m",0),"cond":cond,"code":code}
-    except: return None
-
-# ================================================================
-#  SOURCE 5: clubelo.com (ratings Elo de selecciones, sin key)
-# ================================================================
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_elo(team_name):
-    """Get Elo rating for national teams from clubelo.com."""
-    slug = team_name.replace(" ","-").replace("'","")
-    try:
-        r = requests.get(f"http://api.clubelo.com/{slug}", timeout=8)
-        if r.status_code == 200:
-            lines = r.text.strip().split("\n")
-            if len(lines) >= 2:
-                parts = lines[-1].split(",")
-                if len(parts) >= 5:
-                    return {"team":team_name, "elo":float(parts[4]), "rank":parts[2]}
     except: pass
     return None
 
 # ================================================================
-#  SMART FIXTURE LOADER — Fallback automatico entre fuentes
+#  CAPA DE DATOS — SOURCE 4: open-meteo
 # ================================================================
-def load_fixtures_smart(league_name):
-    """
-    Carga partidos con fallback automatico entre football-data.org y api-sports.io.
-    - Latam y selecciones: api-sports primero
-    - Europa: football-data primero
-    Siempre intenta la otra fuente si la primaria falla.
-    """
-    fd_ok = bool(get_fd_key())
-    as_ok = bool(get_as_key())
-    latam_first = league_name in AS_PRIORITY_LEAGUES
 
-    fixtures = []
-    source   = None
+@st.cache_data(ttl=3600, show_spinner=False)
+def obtener_clima(lat, lon):
+    try:
+        r = requests.get("https://api.open-meteo.com/v1/forecast",
+                         params={"latitude": lat, "longitude": lon,
+                                 "current": "temperature_2m,precipitation,windspeed_10m,weathercode",
+                                 "timezone": "auto"}, timeout=8)
+        c    = r.json().get("current", {})
+        code = c.get("weathercode", 0)
+        cond = ("Despejado" if code < 3 else "Nublado" if code < 50
+                else "Lluvioso" if code < 80 else "Tormenta")
+        return {"temp": c.get("temperature_2m","?"), "lluvia": c.get("precipitation", 0),
+                "viento": c.get("windspeed_10m", 0), "cond": cond, "code": code}
+    except: return None
 
-    if latam_first:
-        # Try api-sports first
-        if as_ok and league_name in AS_LEAGUES:
-            lg = AS_LEAGUES[league_name]
-            fixtures = as_get_fixtures(lg["id"], lg["season"])
-            if fixtures: source = "api-sports.io"
-        # Fallback football-data
-        if not fixtures and fd_ok and league_name in FD_COMPETITIONS:
-            fixtures = fd_get_fixtures(FD_COMPETITIONS[league_name])
-            if fixtures: source = "football-data.org"
+# ================================================================
+#  CARGADOR INTELIGENTE DE PARTIDOS — Fallback automático
+# ================================================================
+
+def cargar_partidos(nombre_liga):
+    """
+    Prioridad:
+    - Latam → api-sports primero, football-data como fallback
+    - Europa / UCL → football-data primero, api-sports como fallback
+    """
+    lg     = LIGAS[nombre_liga]
+    as_id  = lg["as_id"]
+    fd_cod = lg["fd_code"]
+    season = lg["season"]
+    region = lg["region"]
+    es_latam = (region == "Latinoamerica")
+
+    partidos = []; fuente = None
+
+    if es_latam:
+        partidos = as_partidos(as_id, season)
+        if partidos: fuente = "api-sports.io"
+        if not partidos and fd_cod:
+            partidos = fd_partidos(fd_cod)
+            if partidos: fuente = "football-data.org"
     else:
-        # Try football-data first
-        if fd_ok and league_name in FD_COMPETITIONS:
-            fixtures = fd_get_fixtures(FD_COMPETITIONS[league_name])
-            if fixtures: source = "football-data.org"
-        # Fallback api-sports
-        if not fixtures and as_ok and league_name in AS_LEAGUES:
-            lg = AS_LEAGUES[league_name]
-            fixtures = as_get_fixtures(lg["id"], lg["season"])
-            if fixtures: source = "api-sports.io"
+        if fd_cod:
+            partidos = fd_partidos(fd_cod)
+            if partidos: fuente = "football-data.org"
+        if not partidos:
+            partidos = as_partidos(as_id, season)
+            if partidos: fuente = "api-sports.io"
 
-    return fixtures, source
+    return partidos, fuente
 
 # ================================================================
-#  SMART STATS LOADER — Sincronizacion de IDs entre fuentes
+#  CARGADOR INTELIGENTE DE ESTADÍSTICAS — Sync de IDs
 # ================================================================
-def load_team_stats_smart(match, league_name):
-    """
-    Carga estadisticas de ambas fuentes y las sincroniza.
-    Usa busqueda por nombre para resolver IDs cuando no coinciden.
-    """
-    fd_ok = bool(get_fd_key())
-    as_ok = bool(get_as_key())
-    lg    = AS_LEAGUES.get(league_name, {})
-    season= lg.get("season", 2024)
-    league_id = lg.get("id")
 
-    # IDs desde la fuente que cargo los fixtures
-    home_id_as = match.get("home_id_as") or match.get("home_id")
-    away_id_as = match.get("away_id_as") or match.get("away_id")
-    home_id_fd = match.get("home_id_fd") or match.get("home_id")
-    away_id_fd = match.get("away_id_fd") or match.get("away_id")
+def cargar_estadisticas(partido, nombre_liga):
+    lg      = LIGAS[nombre_liga]
+    as_id   = lg["as_id"]
+    season  = lg["season"]
 
-    # Si los IDs de AS son None (fixture vino de FD), buscar por nombre
-    if as_ok and league_id:
-        if not home_id_as:
-            home_id_as = as_search_team(match["home"])
-        if not away_id_as:
-            away_id_as = as_search_team(match["away"])
+    # Resolver IDs de api-sports
+    id_local_as  = partido.get("id_local_as")
+    id_visita_as = partido.get("id_visita_as")
+    if not id_local_as:
+        id_local_as  = as_buscar_equipo(partido["local"])
+    if not id_visita_as:
+        id_visita_as = as_buscar_equipo(partido["visita"])
 
-    # Cargar historico desde FD
-    fd_home = fd_get_team_matches(home_id_fd) if fd_ok and home_id_fd else []
-    fd_away = fd_get_team_matches(away_id_fd) if fd_ok and away_id_fd else []
+    id_local_fd  = partido.get("id_local_fd")
+    id_visita_fd = partido.get("id_visita_fd")
 
-    # Cargar estadisticas desde AS
-    as_home_raw = as_get_stats(home_id_as, league_id, season) if as_ok and home_id_as and league_id else {}
-    as_away_raw = as_get_stats(away_id_as, league_id, season) if as_ok and away_id_as and league_id else {}
-
-    # Cargar partidos recientes desde AS (para BTTS y clean sheets)
-    as_home_fx = as_get_last_fixtures(home_id_as, season) if as_ok and home_id_as else []
-    as_away_fx = as_get_last_fixtures(away_id_as, season) if as_ok and away_id_as else []
+    # Cargar datos
+    hist_local   = fd_historial(id_local_fd,  50) if id_local_fd  else []
+    hist_visita  = fd_historial(id_visita_fd, 50) if id_visita_fd else []
+    stats_local  = as_estadisticas(id_local_as,  as_id, season) if id_local_as  else {}
+    stats_visita = as_estadisticas(id_visita_as, as_id, season) if id_visita_as else {}
+    ult_local    = as_ultimos(id_local_as,  season, 20) if id_local_as  else []
+    ult_visita   = as_ultimos(id_visita_as, season, 20) if id_visita_as else []
 
     return {
-        "home": {"fd_matches":fd_home, "as_stats":as_home_raw,
-                 "as_fixtures":as_home_fx, "name":match["home"],
-                 "id_fd":home_id_fd, "id_as":home_id_as},
-        "away": {"fd_matches":fd_away, "as_stats":as_away_raw,
-                 "as_fixtures":as_away_fx, "name":match["away"],
-                 "id_fd":away_id_fd, "id_as":away_id_as},
-        "season": season, "league_id": league_id,
+        "local":  {"hist": hist_local,  "stats": stats_local,  "ultimos": ult_local,
+                   "id_fd": id_local_fd,  "id_as": id_local_as,  "nombre": partido["local"]},
+        "visita": {"hist": hist_visita, "stats": stats_visita, "ultimos": ult_visita,
+                   "id_fd": id_visita_fd, "id_as": id_visita_as, "nombre": partido["visita"]},
+        "season": season, "league_id": as_id,
     }
 
 # ================================================================
-#  STATISTICAL ENGINE
+#  MOTOR ESTADÍSTICO — Perfiles con varianza
 # ================================================================
-def safe_f(v, d=0.0):
+
+def _f(v, d=0.0):
     try: return float(v) if v is not None else d
     except: return d
 
-def profile_from_fd(matches, team_id):
-    gf, ga = [], []
+def perfil_de_fd(matches, team_id):
+    """Extrae perfil con MEDIA + DESVIACION ESTANDAR de historial FD."""
+    gf_lst, ga_lst = [], []
     for m in matches:
-        ht_id = m.get("homeTeam",{}).get("id")
-        s = m.get("score",{}).get("fullTime",{})
-        h = s.get("home"); a = s.get("away")
+        ht = m.get("homeTeam", {}).get("id")
+        s  = m.get("score", {}).get("fullTime", {})
+        h  = s.get("home"); a = s.get("away")
         if h is None or a is None: continue
-        if ht_id == team_id: gf.append(h or 0); ga.append(a or 0)
-        else:                gf.append(a or 0); ga.append(h or 0)
-    if not gf: return None
-    n = min(len(gf), 15)
-    btts = sum(1 for x,y in zip(gf[-n:],ga[-n:]) if x>0 and y>0)
-    cs   = sum(1 for y in ga[-n:] if y==0)
-    return {"goals_for":round(np.mean(gf[-n:]),3),
-            "goals_against":round(np.mean(ga[-n:]),3),
-            "btts_pct": round(btts/n,2), "cs_pct":round(cs/n,2),
-            "shots_on":4.5,"yellows":1.8,"reds":0.1,"fouls":12.0,"corners":5.2,
-            "source":"football-data.org","n_games":len(gf)}
+        if ht == team_id:
+            gf_lst.append(_f(h)); ga_lst.append(_f(a))
+        else:
+            gf_lst.append(_f(a)); ga_lst.append(_f(h))
+    if not gf_lst: return None
+    n = min(len(gf_lst), 20)
+    gf = gf_lst[-n:]; ga = ga_lst[-n:]
+    btts = sum(1 for x,y in zip(gf,ga) if x>0 and y>0)
+    cs   = sum(1 for y in ga if y==0)
+    return {
+        "goles_a_favor":  round(np.mean(gf), 3),
+        "goles_contra":   round(np.mean(ga), 3),
+        "std_a_favor":    round(np.std(gf),  3),
+        "std_contra":     round(np.std(ga),  3),
+        "btts_pct":       round(btts / n, 2),
+        "cs_pct":         round(cs   / n, 2),
+        "tiros":          4.5, "amarillas": 1.8, "rojas": 0.1,
+        "faltas": 12.0, "corners": 5.2,
+        "fuente": "football-data.org (historico real)",
+        "partidos": len(gf_lst),
+    }
 
-def profile_from_as_stats(stats, is_home=True):
+def perfil_de_as(stats, is_local=True):
+    """Extrae perfil con estadísticas de temporada de AS."""
     if not stats: return None
-    v = "home" if is_home else "away"
-    def g(path, d=0.0):
+    v = "home" if is_local else "away"
+    def g(ruta, d=0.0):
         try:
             x = stats
-            for k in path: x = x[k]
-            return safe_f(x, d)
+            for k in ruta: x = x[k]
+            return _f(x, d)
         except: return d
-    gf = g(["goals","for","average",v]) or g(["goals","for","average","total"]) or 0
+    gf = g(["goals","for","average",v])   or g(["goals","for","average","total"])   or 0
     ga = g(["goals","against","average",v]) or g(["goals","against","average","total"]) or 0
-    if gf==0 and ga==0: return None
+    if gf == 0 and ga == 0: return None
+
     def card_avg(color):
-        d = stats.get("cards",{}).get(color,{})
-        vals = [safe_f(vv) for vv in d.values() if safe_f(vv)>0]
-        return round(sum(vals)/len(vals),2) if vals else (1.8 if color=="yellow" else 0.1)
-    played = safe_f(stats.get("fixtures",{}).get("played",{}).get("total",0))
-    return {"goals_for":max(0.3,gf),"goals_against":max(0.3,ga),
-            "shots_on":g(["shots","on","average"],4.5),
-            "yellows":card_avg("yellow"),"reds":card_avg("red"),
-            "fouls":g(["fouls","committed","average"],12.0),
-            "corners":g(["corners","total","average"],5.2),
-            "source":"api-sports.io","n_games":int(played)}
+        d    = stats.get("cards", {}).get(color, {})
+        vals = [_f(vv) for vv in d.values() if _f(vv) > 0]
+        return round(sum(vals)/len(vals), 2) if vals else (1.8 if color=="yellow" else 0.1)
 
-def enrich_from_as_fixtures(profile, fixtures, team_id):
-    """Add BTTS and clean sheet % from recent fixture history."""
-    if not fixtures or not profile: return profile
-    gf_list, ga_list = [], []
-    for f in fixtures:
-        teams = f.get("teams",{}); score = f.get("goals",{})
-        is_home = teams.get("home",{}).get("id") == team_id
-        h = score.get("home",0) or 0; a = score.get("away",0) or 0
-        gf_list.append(h if is_home else a)
-        ga_list.append(a if is_home else h)
-    if gf_list:
-        n = len(gf_list)
-        profile["btts_pct"] = round(sum(1 for x,y in zip(gf_list,ga_list) if x>0 and y>0)/n,2)
-        profile["cs_pct"]   = round(sum(1 for y in ga_list if y==0)/n,2)
-    return profile
+    jugados = _f(stats.get("fixtures",{}).get("played",{}).get("total", 0))
+    return {
+        "goles_a_favor": max(0.3, gf),
+        "goles_contra":  max(0.3, ga),
+        "std_a_favor":   max(0.3, gf) * 0.55,   # aprox si no hay std directo
+        "std_contra":    max(0.3, ga) * 0.55,
+        "btts_pct":      0.45,
+        "cs_pct":        0.28,
+        "tiros":         g(["shots","on","average"], 4.5),
+        "amarillas":     card_avg("yellow"),
+        "rojas":         card_avg("red"),
+        "faltas":        g(["fouls","committed","average"], 12.0),
+        "corners":       g(["corners","total","average"], 5.2),
+        "fuente":        f"api-sports.io ({'fusionado' if stats.get('_fusionado') else 'temporada'})",
+        "partidos":      int(jugados),
+    }
 
-def merge_profiles(fd_p, as_p):
-    """Weighted merge of both sources. 60% FD historical, 40% AS season stats."""
-    defaults = {"goals_for":1.3,"goals_against":1.1,"shots_on":4.5,
-                "yellows":1.8,"reds":0.1,"fouls":12.0,"corners":5.2,
-                "btts_pct":0.45,"cs_pct":0.25,
-                "source":"Valores promedio de liga","n_games":0}
+def enriquecer_con_ultimos(perfil, ultimos, team_id):
+    """Añade BTTS, CS y std reales de los últimos partidos de AS."""
+    if not ultimos or not perfil: return perfil
+    gf_l, ga_l = [], []
+    for f in ultimos:
+        teams = f.get("teams", {}); goals = f.get("goals", {})
+        es_local = teams.get("home",{}).get("id") == team_id
+        h = goals.get("home", 0) or 0; a = goals.get("away", 0) or 0
+        gf_l.append(h if es_local else a)
+        ga_l.append(a if es_local else h)
+    if gf_l:
+        n = len(gf_l)
+        perfil["btts_pct"]    = round(sum(1 for x,y in zip(gf_l,ga_l) if x>0 and y>0)/n, 2)
+        perfil["cs_pct"]      = round(sum(1 for y in ga_l if y==0)/n, 2)
+        perfil["std_a_favor"] = round(np.std(gf_l), 3)
+        perfil["std_contra"]  = round(np.std(ga_l), 3)
+    return perfil
+
+def fusionar_perfiles(fd_p, as_p):
+    """
+    Fusión inteligente: 70% al de más partidos, 30% al otro.
+    Si solo hay uno, usa ese con defaults para campos faltantes.
+    """
+    defaults = {
+        "goles_a_favor": 1.30, "goles_contra": 1.10,
+        "std_a_favor": 0.72, "std_contra": 0.65,
+        "btts_pct": 0.45, "cs_pct": 0.27,
+        "tiros": 4.5, "amarillas": 1.8, "rojas": 0.1,
+        "faltas": 12.0, "corners": 5.2,
+        "fuente": "Promedio de liga (datos insuficientes)",
+        "partidos": 0,
+    }
+
     if fd_p and as_p:
-        merged = {k:v for k,v in defaults.items()}
-        merged["goals_for"]     = round(fd_p["goals_for"]*0.55    + as_p["goals_for"]*0.45,    3)
-        merged["goals_against"] = round(fd_p["goals_against"]*0.55 + as_p["goals_against"]*0.45,3)
-        for k in ["shots_on","yellows","reds","fouls","corners"]:
-            merged[k] = as_p.get(k, defaults[k])
-        merged["btts_pct"] = fd_p.get("btts_pct", 0.45)
-        merged["cs_pct"]   = fd_p.get("cs_pct",   0.25)
-        merged["source"]   = "Fusion FD + AS (maxima precision)"
-        merged["n_games"]  = fd_p.get("n_games",0)
-        return merged
+        p_fd = fd_p.get("partidos", 0)
+        p_as = as_p.get("partidos", 0)
+        if p_fd >= p_as:
+            w1, w2, src1, src2 = 0.70, 0.30, fd_p, as_p
+        else:
+            w1, w2, src1, src2 = 0.70, 0.30, as_p, fd_p
+        m = {}
+        for k in ["goles_a_favor","goles_contra","std_a_favor","std_contra"]:
+            m[k] = round(src1.get(k, defaults[k])*w1 + src2.get(k, defaults[k])*w2, 3)
+        for k in ["tiros","amarillas","rojas","faltas","corners","btts_pct","cs_pct"]:
+            m[k] = src1.get(k, defaults[k])
+        m["fuente"]   = f"Fusión 70/30 ({src1['fuente'].split('(')[0].strip()})"
+        m["partidos"] = max(p_fd, p_as)
+        return m
+
     p = fd_p or as_p
     if p:
-        for k,v in defaults.items():
+        for k, v in defaults.items():
             if k not in p: p[k] = v
         return p
     return defaults
 
-def weather_adjust(profile, w):
-    if not w: return profile
-    p = dict(profile)
-    rain = w.get("rain",0); wind = w.get("wind",0)
-    if rain > 2:
-        p["goals_for"]  = round(p["goals_for"] *0.92, 3)
-        p["shots_on"]   = round(p["shots_on"]  *0.90, 3)
-        p["fouls"]      = round(p["fouls"]     *1.05, 3)
-        p["corners"]    = round(p["corners"]   *1.03, 3)
-    if wind > 30:
-        p["corners"]  = round(p["corners"] *0.95, 3)
-        p["shots_on"] = round(p["shots_on"]*0.96, 3)
+def ajuste_clima(perfil, clima):
+    if not clima: return perfil
+    p = dict(perfil)
+    lluvia = clima.get("lluvia", 0); viento = clima.get("viento", 0)
+    if lluvia > 2:
+        p["goles_a_favor"] = round(p["goles_a_favor"] * 0.91, 3)
+        p["tiros"]         = round(p["tiros"]         * 0.89, 3)
+        p["faltas"]        = round(p["faltas"]        * 1.06, 3)
+        p["corners"]       = round(p["corners"]       * 1.04, 3)
+    if viento > 30:
+        p["corners"]       = round(p["corners"]       * 0.94, 3)
+        p["tiros"]         = round(p["tiros"]         * 0.95, 3)
     return p
 
-def elo_adjust(lh, la, home_elo, away_elo):
-    """Adjust expected goals based on Elo difference."""
-    if not home_elo or not away_elo: return lh, la
-    diff = home_elo["elo"] - away_elo["elo"]
-    factor = 1 + (diff / 800)
-    factor = max(0.75, min(factor, 1.40))
-    return round(lh * factor, 3), round(la / factor, 3)
+# ================================================================
+#  MOTOR MONTE CARLO — Con varianza real
+# ================================================================
 
-def run_mc(hp, ap, weather=None, home_elo=None, away_elo=None):
-    hp = weather_adjust(hp, weather)
-    ap = weather_adjust(ap, weather)
-    league_avg = 1.35
-    lh = max(0.3, hp["goals_for"] * (ap["goals_against"]/league_avg) * 1.12)
-    la = max(0.3, ap["goals_for"] * (hp["goals_against"]/league_avg))
-    lh, la = elo_adjust(lh, la, home_elo, away_elo)
+def correr_montecarlo(lp, vp, clima=None):
+    lp = ajuste_clima(lp, clima)
+    vp = ajuste_clima(vp, clima)
+
+    avg_liga = 1.35
+    # Lambdas esperados (goles esperados por partido)
+    lh = max(0.25, lp["goles_a_favor"] * (vp["goles_contra"] / avg_liga) * 1.12)
+    la = max(0.25, vp["goles_a_favor"] * (lp["goles_contra"] / avg_liga))
+
+    # Desviaciones estándar para mayor realismo
+    std_h = max(0.4, lp.get("std_a_favor", lh * 0.55))
+    std_a = max(0.4, vp.get("std_a_favor", la * 0.55))
+
     rng = np.random.default_rng(42)
-    hg  = rng.poisson(lh, N_SIM); ag = rng.poisson(la, N_SIM)
+
+    # Simulación con distribución Poisson ajustada por varianza
+    # Usamos Negative Binomial cuando varianza > media (sobredispersión)
+    def simular(mu, std, n):
+        varianza = std ** 2
+        if varianza > mu * 1.1 and mu > 0:
+            # Negative Binomial: más realista para equipos irregulares
+            r_nb = mu**2 / max(varianza - mu, 0.01)
+            p_nb = r_nb / (r_nb + mu)
+            return rng.negative_binomial(max(1, r_nb), min(0.999, p_nb), n)
+        else:
+            return rng.poisson(mu, n)
+
+    hg  = simular(lh, std_h, N_SIM)
+    ag  = simular(la, std_a, N_SIM)
     tot = hg + ag
-    def p(n): return round(n/N_SIM*100, 1)
-    hc  = rng.poisson(hp["corners"], N_SIM); ac = rng.poisson(ap["corners"],  N_SIM)
-    hy  = rng.poisson(hp["yellows"], N_SIM); ay = rng.poisson(ap["yellows"],  N_SIM)
-    hr  = rng.poisson(hp["reds"],    N_SIM); ar = rng.poisson(ap["reds"],     N_SIM)
-    hf  = rng.poisson(hp["fouls"],   N_SIM); af = rng.poisson(ap["fouls"],    N_SIM)
-    hs  = rng.poisson(hp["shots_on"],N_SIM); as_= rng.poisson(ap["shots_on"], N_SIM)
-    scores={}
-    for h,a in zip(hg,ag): k=f"{h}-{a}"; scores[k]=scores.get(k,0)+1
-    return {"phw":p(np.sum(hg>ag)),"pd":p(np.sum(hg==ag)),"paw":p(np.sum(hg<ag)),
-            "lh":round(lh,2),"la":round(la,2),
-            "o25":p(np.sum(tot>2.5)),"u25":p(np.sum(tot<=2.5)),
-            "btts":p(np.sum((hg>0)&(ag>0))),"no_btts":p(np.sum(~((hg>0)&(ag>0)))),
-            "hc":round(np.mean(hc),2),"ac":round(np.mean(ac),2),"tc":round(np.mean(hc+ac),2),
-            "co85":p(np.sum(hc+ac>8.5)),"cu85":p(np.sum(hc+ac<=8.5)),
-            "hy":round(np.mean(hy),2),"ay":round(np.mean(ay),2),"ty":round(np.mean(hy+ay),2),
-            "hr":round(np.mean(hr),2),"ar":round(np.mean(ar),2),"tr":round(np.mean(hr+ar),2),
-            "hf":round(np.mean(hf),2),"af":round(np.mean(af),2),"tf":round(np.mean(hf+af),2),
-            "hs":round(np.mean(hs),2),"as_":round(np.mean(as_),2),
-            "top":[(s,p(c)) for s,c in sorted(scores.items(),key=lambda x:-x[1])[:9]],
-            "lh_raw":lh,"la_raw":la}
 
-# ================================================================
-#  CONFIDENCE & PREDICTIONS
-# ================================================================
-def conf_info(c):
-    if c>=80:   return("#3ecf8e","✅ ALTA",  "pc-high","b-high")
-    elif c>=60: return("#f5c842","⚡ MEDIA", "pc-med", "b-med")
-    else:       return("#f4622a","⚠️ BAJA",  "pc-low", "b-low")
+    def p(n): return round(n / N_SIM * 100, 1)
 
-def implied(odd):
-    if not odd or odd<=0: return 0
-    return round(100/odd,1)
+    hc  = rng.poisson(lp["corners"],    N_SIM)
+    ac  = rng.poisson(vp["corners"],    N_SIM)
+    hy  = rng.poisson(lp["amarillas"],  N_SIM)
+    ay  = rng.poisson(vp["amarillas"],  N_SIM)
+    hr  = rng.poisson(lp["rojas"],      N_SIM)
+    ar  = rng.poisson(vp["rojas"],      N_SIM)
+    hf  = rng.poisson(lp["faltas"],     N_SIM)
+    af  = rng.poisson(vp["faltas"],     N_SIM)
+    hs  = rng.poisson(lp["tiros"],      N_SIM)
+    as_ = rng.poisson(vp["tiros"],      N_SIM)
 
-def build_predictions(R, hn, an, odds=None):
-    rows=[]
-    # 1X2
-    best=max([(R["phw"],f"Victoria {hn}"),(R["pd"],"Empate"),(R["paw"],f"Victoria {an}")],key=lambda x:x[0])
-    c_adj=best[0]
-    if odds:
-        ok = odds.get("odd_home" if "Victoria "+hn==best[1] else
-                      "odd_draw" if "Empate"==best[1] else "odd_away")
-        if ok: c_adj=round(best[0]*0.65+implied(ok)*0.35,1)
-    rows.append({"mkt":"Resultado 1X2","pick":best[1],"conf":c_adj,
-                 "det":f"Local {R['phw']}% / Empate {R['pd']}% / Visita {R['paw']}%"})
-    # O/U 2.5
-    o,u=R["o25"],R["u25"]
-    rows.append({"mkt":"Goles O/U 2.5",
-                 "pick":"Mas de 2.5 goles" if o>=u else "Menos de 2.5 goles",
-                 "conf":max(o,u),"det":f"Goles esperados: {round(R['lh']+R['la'],2)}"})
-    # BTTS
-    rows.append({"mkt":"Ambos Marcan BTTS",
-                 "pick":"Si — Ambos anotan" if R["btts"]>=R["no_btts"] else "No — Alguno no anota",
-                 "conf":max(R["btts"],R["no_btts"]),
-                 "det":f"lambda local {R['lh']} / lambda visita {R['la']}"})
-    # Corners
-    co,cu=R["co85"],R["cu85"]
-    rows.append({"mkt":"Corners O/U 8.5",
-                 "pick":"Mas de 8.5 corners" if co>=cu else "Menos de 8.5 corners",
-                 "conf":max(co,cu),"det":f"Total esperado: {R['tc']} corners"})
-    # Doble oportunidad
-    dc1=min(round(R["phw"]+R["pd"],1),99.0); dc2=min(round(R["paw"]+R["pd"],1),99.0)
-    rows.append({"mkt":"Doble Oportunidad",
-                 "pick":f"{hn} o Empate" if dc1>=dc2 else f"{an} o Empate",
-                 "conf":max(dc1,dc2),"det":"Cubre dos resultados posibles"})
-    # Tarjetas
-    ty=R["ty"]; line=max(1,round(ty)-1)
-    prob_y=min(95.0,max(5.0,round(50+(ty-line-0.5)*18,1)))
-    rows.append({"mkt":f"Amarillas O {line}.5","pick":f"Mas de {line}.5 amarillas",
-                 "conf":prob_y,"det":f"Total amarillas esperadas: {ty}"})
-    # Marcador exacto
-    top=R["top"][0]
-    rows.append({"mkt":"Marcador Exacto","pick":f"Resultado {top[0]}",
-                 "conf":top[1],"det":"Marcador mas frecuente en 10,000 simulaciones"})
-    return sorted(rows,key=lambda x:-x["conf"])
-
-# ================================================================
-#  BET SUGGESTION ENGINE
-# ================================================================
-def kelly_criterion(prob, odd, bankroll=100, fraction=0.25):
-    """Kelly fraction for optimal stake."""
-    if not odd or odd <= 1: return 0
-    q = 1 - prob/100
-    b = odd - 1
-    kelly = (b*(prob/100) - q) / b
-    kelly = max(0, kelly) * fraction  # fractional Kelly (safer)
-    return round(kelly * bankroll, 2)
-
-def generate_bet_suggestion(preds, R, odds, hn, an, bankroll=100):
-    """Generate a clear bet suggestion with stake recommendation."""
-    # Filter only high-confidence predictions
-    high_conf = [p for p in preds if p["conf"] >= 75]
-    if not high_conf:
-        return None
-
-    best = high_conf[0]
-    conf = best["conf"]
-    pick = best["pick"]
-    mkt  = best["mkt"]
-
-    # Get corresponding odd
-    odd_val = None
-    if odds:
-        if "Victoria " + hn in pick:   odd_val = odds.get("odd_home")
-        elif "Empate"       in pick:    odd_val = odds.get("odd_draw")
-        elif "Victoria " + an in pick:  odd_val = odds.get("odd_away")
-        elif "Mas de 2.5"   in pick:    odd_val = odds.get("odd_over25")
-        elif "Menos de 2.5" in pick:    odd_val = odds.get("odd_under25")
-
-    # Kelly stake
-    stake = kelly_criterion(conf, odd_val or 1.85, bankroll) if odd_val else None
-
-    # Value bet check
-    implied_prob = implied(odd_val) if odd_val else None
-    value_bet    = (conf > implied_prob + 5) if implied_prob else None
-
-    # Risk level
-    if conf >= 85:   risk = ("BAJO",   "#3ecf8e")
-    elif conf >= 75: risk = ("MEDIO",  "#f5c842")
-    else:            risk = ("ALTO",   "#f4622a")
-
-    # Build combo suggestion if 2+ high conf
-    combo = None
-    if len(high_conf) >= 2:
-        combo_picks = [p["pick"] for p in high_conf[:2]]
-        combo_conf  = round(high_conf[0]["conf"] * high_conf[1]["conf"] / 100, 1)
-        combo = {"picks": combo_picks, "conf": combo_conf}
+    scores = {}
+    for h, a in zip(hg, ag):
+        k = f"{h}-{a}"; scores[k] = scores.get(k, 0) + 1
 
     return {
-        "pick":      pick,
-        "mkt":       mkt,
-        "conf":      conf,
-        "odd":       odd_val,
-        "stake":     stake,
-        "implied":   implied_prob,
-        "value_bet": value_bet,
-        "risk":      risk,
-        "combo":     combo,
+        "p_local":   p(np.sum(hg > ag)),
+        "p_empate":  p(np.sum(hg == ag)),
+        "p_visita":  p(np.sum(hg < ag)),
+        "lh": round(lh, 2), "la": round(la, 2),
+        "o25": p(np.sum(tot > 2.5)),  "u25": p(np.sum(tot <= 2.5)),
+        "o15": p(np.sum(tot > 1.5)),  "u15": p(np.sum(tot <= 1.5)),
+        "o35": p(np.sum(tot > 3.5)),  "u35": p(np.sum(tot <= 3.5)),
+        "btts":    p(np.sum((hg > 0) & (ag > 0))),
+        "no_btts": p(np.sum(~((hg > 0) & (ag > 0)))),
+        "hc": round(np.mean(hc),2), "ac": round(np.mean(ac),2),
+        "tc": round(np.mean(hc+ac),2),
+        "co85": p(np.sum(hc+ac > 8.5)), "cu85": p(np.sum(hc+ac <= 8.5)),
+        "co105":p(np.sum(hc+ac > 10.5)),"co65": p(np.sum(hc+ac > 6.5)),
+        "hy": round(np.mean(hy),2), "ay": round(np.mean(ay),2),
+        "ty": round(np.mean(hy+ay),2),
+        "hr": round(np.mean(hr),2), "ar": round(np.mean(ar),2),
+        "tr": round(np.mean(hr+ar),2),
+        "hf": round(np.mean(hf),2), "af": round(np.mean(af),2),
+        "tf": round(np.mean(hf+af),2),
+        "hs": round(np.mean(hs),2), "as_": round(np.mean(as_),2),
+        "top": [(s, p(c)) for s,c in sorted(scores.items(), key=lambda x:-x[1])[:9]],
+        "std_h": round(std_h,3), "std_a": round(std_a,3),
+        "modelo": "Negative Binomial" if (std_h**2 > lh*1.1) else "Poisson",
     }
 
-def render_bet_suggestion(bet, hn, an, bankroll):
-    if not bet: return
-    color,_,_,_ = conf_info(bet["conf"])
-    risk_lbl, risk_color = bet["risk"]
-    value_html = ""
-    if bet["value_bet"] is True:
-        value_html = f'<div style="background:rgba(62,207,142,.15);border-radius:6px;padding:6px 12px;margin-top:6px;font-size:.8rem;color:#3ecf8e">💎 <b>VALUE BET DETECTADA</b> — Tu probabilidad ({bet["conf"]}%) supera la probabilidad implícita de la cuota ({bet["implied"]}%). Ventaja estadística.</div>'
-    elif bet["value_bet"] is False:
-        value_html = f'<div style="background:rgba(244,98,42,.1);border-radius:6px;padding:6px 12px;margin-top:6px;font-size:.8rem;color:#f4622a">⚠️ Sin ventaja de valor — La cuota ya descuenta esta probabilidad.</div>'
+# ================================================================
+#  PREDICCIONES
+# ================================================================
 
-    odd_txt  = f"{bet['odd']:.2f}" if bet['odd'] else "N/D (sin cuota en vivo)"
-    stake_txt= f"${bet['stake']:.2f} de ${bankroll}" if bet['stake'] else "Calcula segun cuota disponible"
+def info_conf(c):
+    if c >= 80:   return "#3ecf8e", "✅ ALTA",  "pc-h", "ph"
+    elif c >= 60: return "#f5c842", "⚡ MEDIA", "pc-m", "pm"
+    else:         return "#f4622a", "⚠️ BAJA",  "pc-l", "pl"
+
+def impl(odd):
+    if not odd or odd <= 0: return 0
+    return round(100 / odd, 1)
+
+def construir_predicciones(R, local, visita, cuotas=None):
+    filas = []
+
+    # 1X2 con ajuste de cuotas
+    candidatos = [(R["p_local"],f"Victoria {local}"),(R["p_empate"],"Empate"),(R["p_visita"],f"Victoria {visita}")]
+    mejor = max(candidatos, key=lambda x: x[0])
+    conf = mejor[0]
+    if cuotas:
+        key_map = {f"Victoria {local}":"cuota_local","Empate":"cuota_empate",f"Victoria {visita}":"cuota_visita"}
+        odd = cuotas.get(key_map.get(mejor[1],""))
+        if odd: conf = round(mejor[0]*0.65 + impl(odd)*0.35, 1)
+    filas.append({"mkt":"Resultado 1X2","pick":mejor[1],"conf":conf,
+                  "det":f"Local {R['p_local']}% / Empate {R['p_empate']}% / Visita {R['p_visita']}%"})
+
+    # Goles O/U múltiples líneas
+    for line, ov, uv in [("1.5", R["o15"], R["u15"]),
+                          ("2.5", R["o25"], R["u25"]),
+                          ("3.5", R["o35"], R["u35"])]:
+        pick = f"Mas de {line} goles" if ov >= uv else f"Menos de {line} goles"
+        filas.append({"mkt":f"Goles O/U {line}","pick":pick,"conf":max(ov,uv),
+                      "det":f"Goles esperados: {round(R['lh']+R['la'],2)}"})
+
+    # BTTS
+    filas.append({"mkt":"Ambos Marcan (BTTS)",
+                  "pick":"Si — Ambos anotan" if R["btts"]>=R["no_btts"] else "No — Alguno no anota",
+                  "conf":max(R["btts"],R["no_btts"]),
+                  "det":f"λ local {R['lh']} / λ visita {R['la']}"})
+
+    # Corners múltiples líneas
+    for line,ov,uv in [("6.5",R["co65"],100-R["co65"]),
+                        ("8.5",R["co85"],R["cu85"]),
+                        ("10.5",R["co105"],100-R["co105"])]:
+        pick = f"Mas de {line} corners" if ov >= uv else f"Menos de {line} corners"
+        filas.append({"mkt":f"Corners O/U {line}","pick":pick,"conf":max(ov,uv),
+                      "det":f"Total esperado: {R['tc']} corners"})
+
+    # Doble oportunidad
+    dc1 = min(round(R["p_local"]+R["p_empate"],1), 99.0)
+    dc2 = min(round(R["p_visita"]+R["p_empate"],1), 99.0)
+    filas.append({"mkt":"Doble Oportunidad",
+                  "pick":f"{local} o Empate" if dc1>=dc2 else f"{visita} o Empate",
+                  "conf":max(dc1,dc2), "det":"Cubre dos de tres resultados posibles"})
+
+    # Tarjetas
+    ty = R["ty"]; line_y = max(1, round(ty) - 1)
+    prob_y = min(95.0, max(5.0, round(50 + (ty - line_y - 0.5)*18, 1)))
+    filas.append({"mkt":f"Amarillas O {line_y}.5","pick":f"Mas de {line_y}.5 amarillas",
+                  "conf":prob_y,"det":f"Total amarillas esperadas: {ty}"})
+
+    # Marcador exacto
+    top = R["top"][0]
+    filas.append({"mkt":"Marcador Exacto","pick":f"Resultado {top[0]}",
+                  "conf":top[1],"det":"Marcador mas frecuente en 10,000 simulaciones"})
+
+    return sorted(filas, key=lambda x: -x["conf"])
+
+# ================================================================
+#  CRITERIO DE KELLY + DETECTOR VALUE BET
+# ================================================================
+
+def kelly(prob, odd, bankroll=100, fraccion=0.25):
+    if not odd or odd <= 1.0: return 0
+    p = prob / 100; q = 1 - p; b = odd - 1
+    k = (b * p - q) / b
+    k = max(0, k) * fraccion
+    return round(k * bankroll, 2)
+
+def generar_sugerencia(predicciones, R, cuotas, local, visita, bankroll=100):
+    altas = [p for p in predicciones if p["conf"] >= 75]
+    if not altas: return None
+
+    mejor = altas[0]
+    conf  = mejor["conf"]
+    pick  = mejor["pick"]
+    mkt   = mejor["mkt"]
+
+    # Buscar cuota correspondiente
+    cuota_val = None
+    if cuotas:
+        if local in pick:    cuota_val = cuotas.get("cuota_local")
+        elif "Empate" in pick: cuota_val = cuotas.get("cuota_empate")
+        elif visita in pick:  cuota_val = cuotas.get("cuota_visita")
+        elif "2.5" in mkt and "Mas" in pick:   cuota_val = cuotas.get("cuota_o25")
+        elif "2.5" in mkt and "Menos" in pick: cuota_val = cuotas.get("cuota_u25")
+
+    stake       = kelly(conf, cuota_val or 1.90, bankroll) if cuota_val else None
+    impl_prob   = impl(cuota_val) if cuota_val else None
+    value_bet   = (conf > impl_prob + 5) if impl_prob else None
+    ventaja     = round(conf - impl_prob, 1) if impl_prob else None
+
+    riesgo = ("BAJO", "#3ecf8e") if conf>=85 else ("MEDIO","#f5c842") if conf>=75 else ("ALTO","#f4622a")
+
+    # Combinada si hay 2+ selecciones de alta confianza
+    combinada = None
+    if len(altas) >= 2:
+        c2 = altas[1]
+        conf_combo = round(altas[0]["conf"] * altas[1]["conf"] / 100, 1)
+        if conf_combo >= 50:
+            combinada = {"picks": [altas[0]["pick"], altas[1]["pick"]],
+                         "conf": conf_combo,
+                         "mercados": [altas[0]["mkt"], altas[1]["mkt"]]}
+
+    return {"pick": pick, "mkt": mkt, "conf": conf, "cuota": cuota_val,
+            "stake": stake, "impl": impl_prob, "value": value_bet,
+            "ventaja": ventaja, "riesgo": riesgo, "combinada": combinada}
+
+# ================================================================
+#  RENDERIZADO UI
+# ================================================================
+
+def render_prediccion(pred):
+    color, badge, pc_cls, b_cls = info_conf(pred["conf"])
+    c = pred["conf"]; w = int(min(c, 100))
+    alerta = ""
+    if c < 60:
+        alerta = f'<div style="margin-top:7px;padding:5px 12px;background:rgba(244,98,42,.08);border-radius:6px;font-size:.74rem;color:#f4622a">⚠️ RIESGO ALTO ({c}%) — No se recomienda apostar en este mercado.</div>'
+    elif c < 80:
+        alerta = f'<div style="margin-top:7px;padding:5px 12px;background:rgba(245,200,66,.07);border-radius:6px;font-size:.74rem;color:#f5c842">⚡ Confianza media ({c}%) — Analiza antes de apostar.</div>'
+    st.markdown(f"""
+    <div class="pc {pc_cls}">
+      <div style="min-width:130px"><div class="pmkt">{pred['mkt']}</div></div>
+      <div style="flex:1">
+        <div class="ppick">{pred['pick']}</div>
+        <div class="pdet">{pred['det']}</div>
+      </div>
+      <div style="text-align:center;min-width:100px">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:2rem;color:{color};line-height:1">{c}%</div>
+        <div style="background:#0c0c1c;border-radius:99px;height:6px;overflow:hidden;margin:4px 0">
+          <div style="width:{w}%;height:100%;background:{color};border-radius:99px"></div>
+        </div>
+        <span class="pbadge {b_cls}">{badge}</span>
+      </div>
+    </div>{alerta}""", unsafe_allow_html=True)
+
+def render_sugerencia(sug, bankroll):
+    if not sug: return
+    color, _, _, _ = info_conf(sug["conf"])
+    riesgo_lbl, riesgo_color = sug["riesgo"]
+
+    value_html = ""
+    if sug["value"] is True:
+        v = sug.get("ventaja", 0)
+        value_html = f'<div class="value-yes">💎 <b>VALUE BET DETECTADA</b> — Tu modelo da {sug["conf"]}% vs {sug["impl"]}% implícito de la cuota. Ventaja estadística de +{v}%. Esto es una apuesta con valor positivo.</div>'
+    elif sug["value"] is False:
+        value_html = f'<div class="value-no">Sin ventaja de valor — La cuota ya descuenta esta probabilidad. Procede con precaución.</div>'
+
+    cuota_txt = f"{sug['cuota']:.2f}" if sug["cuota"] else "N/D (sin cuota en vivo)"
+    stake_txt = f"${sug['stake']:.2f} de ${bankroll} ({round(sug['stake']/bankroll*100,1)}% del bankroll)" if sug["stake"] else "Estima según cuota disponible"
 
     combo_html = ""
-    if bet.get("combo"):
+    if sug.get("combinada"):
+        cmb = sug["combinada"]
         combo_html = f"""
-        <div style="margin-top:14px;padding:12px;background:#0a1a0a;border-radius:8px;border:1px solid #3ecf8e22">
-          <div style="font-size:.72rem;color:#404060;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">Combinada sugerida (2 selecciones)</div>
-          <div style="font-size:.88rem;font-weight:600">{"  +  ".join(bet['combo']['picks'])}</div>
-          <div style="font-size:.75rem;color:#505070;margin-top:3px">Confianza combinada: {bet['combo']['conf']}% — mayor cuota, mayor riesgo</div>
+        <div class="combo-box">
+          <div style="font-size:.65rem;color:#30305a;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px">Apuesta Combinada Sugerida</div>
+          <div style="font-weight:600;font-size:.88rem">{"  +  ".join(cmb['picks'])}</div>
+          <div style="font-size:.72rem;color:#40406a;margin-top:4px">{" / ".join(cmb['mercados'])}</div>
+          <div style="font-size:.75rem;color:#3ecf8e88;margin-top:4px">Confianza combinada: {cmb['conf']}% — mayor cuota potencial, mayor riesgo</div>
         </div>"""
 
     st.markdown(f"""
     <div class="bet-box">
-      <h3>SUGERENCIA DE APUESTA</h3>
+      <div class="bet-title">SUGERENCIA DE APUESTA</div>
       <div class="bet-row">
-        <span class="bet-label">Mercado recomendado</span>
-        <span class="bet-val">{bet['mkt']}</span>
+        <span class="bl">Mercado recomendado</span>
+        <span class="bv">{sug['mkt']}</span>
       </div>
       <div class="bet-row">
-        <span class="bet-label">Seleccion</span>
-        <span style="font-weight:700;font-size:.95rem;color:#e2e2f0">{bet['pick']}</span>
+        <span class="bl">Seleccion</span>
+        <span style="font-weight:700;font-size:.92rem;color:#e2e2f0">{sug['pick']}</span>
       </div>
       <div class="bet-row">
-        <span class="bet-label">Confianza estadistica</span>
-        <span style="font-family:'Bebas Neue',sans-serif;font-size:1.5rem;color:{color}">{bet['conf']}%</span>
+        <span class="bl">Confianza estadistica</span>
+        <span style="font-family:'Bebas Neue',sans-serif;font-size:1.6rem;color:{color}">{sug['conf']}%</span>
       </div>
       <div class="bet-row">
-        <span class="bet-label">Cuota de referencia</span>
-        <span class="bet-val">{odd_txt}</span>
+        <span class="bl">Cuota de referencia</span>
+        <span class="bv">{cuota_txt}</span>
       </div>
       <div class="bet-row">
-        <span class="bet-label">Nivel de riesgo</span>
-        <span style="color:{risk_color};font-weight:700">{risk_lbl}</span>
+        <span class="bl">Nivel de riesgo</span>
+        <span style="color:{riesgo_color};font-weight:700;font-size:.9rem">{riesgo_lbl}</span>
       </div>
       <div class="bet-row">
-        <span class="bet-label">Stake sugerido (Kelly x0.25)</span>
-        <span style="color:#f5c842;font-weight:700">{stake_txt}</span>
+        <span class="bl">Stake Kelly x0.25</span>
+        <span style="color:#f5c842;font-weight:700;font-size:.88rem">{stake_txt}</span>
       </div>
       {value_html}
       {combo_html}
-      <div class="warning-bet">
-        ⚠️ <b>Advertencia:</b> Las sugerencias son estadisticas, no garantias. 
-        Nunca apuestes mas de lo que puedes perder. Juega con responsabilidad.
-        El criterio de Kelly es orientativo — ajusta segun tu bankroll real.
+      <div class="bet-warn">
+        ⚠️ Las sugerencias son orientativas basadas en estadística. No son garantía de resultado.
+        El Criterio de Kelly usa una fracción conservadora (0.25) para proteger tu bankroll.
+        Nunca apuestes más de lo que puedes perder. Juega siempre con responsabilidad.
       </div>
     </div>""", unsafe_allow_html=True)
 
-# ================================================================
-#  UI HELPERS
-# ================================================================
-def render_pred(pred):
-    color,badge,pc_cls,b_cls = conf_info(pred["conf"])
-    c=pred["conf"]; w=int(min(c,100))
-    warn=""
-    if c<60:
-        warn=f'<div style="margin-top:8px;padding:5px 10px;background:rgba(244,98,42,.1);border-radius:6px;font-size:.75rem;color:#f4622a">⚠️ RIESGO ALTO ({c}%) — Evita apostar en este mercado.</div>'
-    elif c<80:
-        warn=f'<div style="margin-top:8px;padding:5px 10px;background:rgba(245,200,66,.08);border-radius:6px;font-size:.75rem;color:#f5c842">⚡ Confianza media ({c}%) — Analiza antes de apostar.</div>'
-    st.markdown(f"""
-    <div class="pc {pc_cls}">
-      <div style="min-width:120px"><div class="pc-mkt">{pred['mkt']}</div></div>
-      <div style="flex:1">
-        <div class="pc-pick">{pred['pick']}</div>
-        <div class="pc-det">{pred['det']}</div>
-      </div>
-      <div style="text-align:center;min-width:95px">
-        <div style="font-family:'Bebas Neue',sans-serif;font-size:1.9rem;color:{color};line-height:1">{c}%</div>
-        <div style="background:#151525;border-radius:99px;height:6px;overflow:hidden;margin:4px 0">
-          <div style="width:{w}%;height:100%;background:{color};border-radius:99px"></div>
-        </div>
-        <span class="badge {b_cls}">{badge}</span>
-      </div>
-    </div>{warn}""", unsafe_allow_html=True)
-
-def prob_bar(label,val,color):
+def barra(label, val, color):
     st.markdown(f"""<div class="prow">
       <div class="prow-lbl">{label} — <b style="color:{color}">{val}%</b></div>
-      <div class="pbar"><div class="pfill" style="width:{min(val,100)}%;background:{color}"></div></div>
+      <div class="pbar-wrap"><div class="pbar-fill" style="width:{min(val,100)}%;background:{color}"></div></div>
     </div>""", unsafe_allow_html=True)
 
-def kpi(val,label,col):
-    col.markdown(f'<div class="kpi"><div class="kpi-val">{val}</div><div class="kpi-lbl">{label}</div></div>',unsafe_allow_html=True)
+def kpi(val, label, col):
+    col.markdown(f'<div class="kpi"><div class="kv">{val}</div><div class="kl">{label}</div></div>',
+                 unsafe_allow_html=True)
 
-def sec(t): st.markdown(f'<div class="sec">{t}</div>',unsafe_allow_html=True)
+def seccion(txt):
+    st.markdown(f'<div class="sec">{txt}</div>', unsafe_allow_html=True)
 
-def pill(name,active):
-    cls="on" if active else "off"; icon="✅" if active else "○"
-    return f'<span class="pill {cls}">{icon} {name}</span>'
+def pill_api(nombre, activa):
+    cls = "apill-on" if activa else "apill-off"
+    ico = "✅" if activa else "○"
+    return f'<span class="apill {cls}">{ico} {nombre}</span>'
 
 # ================================================================
 #  SIDEBAR
 # ================================================================
 with st.sidebar:
-    st.markdown("## APIs")
-    fd_k  = st.text_input("football-data.org Key", value=st.session_state.get("fd_key",""),  type="password", help="Registrate gratis en football-data.org")
-    as_k  = st.text_input("api-sports.io Key",      value=st.session_state.get("as_key",""),  type="password", help="Tu key actual de api-sports.io")
-    od_k  = st.text_input("the-odds-api Key",       value=st.session_state.get("odds_key",""),type="password", help="Gratis en the-odds-api.com")
-    if fd_k:  st.session_state["fd_key"]   = fd_k
-    if as_k:  st.session_state["as_key"]   = as_k
-    if od_k:  st.session_state["odds_key"] = od_k
-
+    st.markdown("## Configuracion")
     st.markdown("---")
-    bankroll = st.number_input("Bankroll para Kelly ($)", min_value=10, max_value=100000,
-                                value=st.session_state.get("bankroll",100), step=10)
+    bankroll = st.number_input(
+        "Bankroll para Kelly ($)",
+        min_value=10, max_value=500000,
+        value=st.session_state.get("bankroll", 100), step=10,
+        help="Tu capital total disponible para apuestas"
+    )
     st.session_state["bankroll"] = bankroll
 
     st.markdown("---")
-    if st.button("Probar conexiones"):
-        if get_fd_key():
+    if st.button("Probar todas las conexiones"):
+        with st.spinner("Probando..."):
+            # FD
             try:
-                r=requests.get(f"{FD_BASE}/competitions",headers=_fd_headers(),timeout=8)
-                st.success(f"football-data: HTTP {r.status_code}")
+                r = requests.get(f"{FD_BASE}/competitions", headers=FD_HDR, timeout=8)
+                st.success(f"football-data.org: HTTP {r.status_code}")
             except Exception as e: st.error(f"FD: {e}")
-        if get_as_key():
+            # AS
             try:
-                r=requests.get(f"{AS_BASE}/status",headers=_as_headers(),timeout=8)
-                d=r.json().get("response",{})
-                req=d.get("requests",{})
-                st.success(f"api-sports: {req.get('current',0)}/{req.get('limit_day',100)} req hoy")
+                r = requests.get(f"{AS_BASE}/status", headers=AS_HDR, timeout=8)
+                d = r.json().get("response", {})
+                req = d.get("requests", {})
+                st.success(f"api-sports.io: {req.get('current',0)}/{req.get('limit_day',100)} req hoy | Plan: {d.get('subscription',{}).get('plan','?')}")
             except Exception as e: st.error(f"AS: {e}")
-        if get_odds_key():
+            # Odds
             try:
-                r=requests.get(f"{ODDS_BASE}/sports",params={"apiKey":get_odds_key()},timeout=8)
-                st.success(f"odds-api: HTTP {r.status_code}")
+                r = requests.get(f"{OD_BASE}/sports", params={"apiKey": ODDS_KEY}, timeout=8)
+                remaining = r.headers.get("x-requests-remaining","?")
+                st.success(f"the-odds-api: HTTP {r.status_code} | Restantes: {remaining}")
             except Exception as e: st.error(f"Odds: {e}")
-        try:
-            r=requests.get("https://api.open-meteo.com/v1/forecast",
-                           params={"latitude":51.5,"longitude":-0.1,"current":"temperature_2m"},timeout=8)
-            st.success(f"open-meteo: {r.json().get('current',{}).get('temperature_2m','?')}C")
-        except: st.error("open-meteo: sin respuesta")
-        try:
-            r=requests.get("http://api.clubelo.com/Barcelona",timeout=8)
-            st.success("clubelo.com: OK" if r.status_code==200 else f"clubelo: {r.status_code}")
-        except: st.error("clubelo: sin respuesta")
+            # Weather
+            try:
+                r = requests.get("https://api.open-meteo.com/v1/forecast",
+                                 params={"latitude":4.71,"longitude":-74.07,"current":"temperature_2m"}, timeout=8)
+                t = r.json().get("current",{}).get("temperature_2m","?")
+                st.success(f"open-meteo: {t}°C en Bogota")
+            except Exception as e: st.error(f"open-meteo: {e}")
 
     st.markdown("---")
-    st.markdown("**Leyenda:**")
-    st.markdown("✅ **ALTA** >= 80%")
-    st.markdown("⚡ **MEDIA** 60-79%")
-    st.markdown("⚠️ **BAJA** < 60%")
-    st.markdown("💎 **VALUE BET** = Ventaja vs cuota")
+    st.markdown("**Leyenda de confianza:**")
+    st.markdown("✅ **ALTA** ≥ 80% — Apostar")
+    st.markdown("⚡ **MEDIA** 60-79% — Analizar")
+    st.markdown("⚠️ **BAJA** < 60% — Evitar")
+    st.markdown("💎 **VALUE BET** — Ventaja vs cuota")
     st.markdown("---")
-    st.markdown("**Fuentes:**")
-    fd_ok=bool(get_fd_key()); as_ok=bool(get_as_key()); od_ok=bool(get_odds_key())
-    st.markdown(f"{'✅' if fd_ok else '○'} football-data.org")
-    st.markdown(f"{'✅' if as_ok else '○'} api-sports.io")
-    st.markdown(f"{'✅' if od_ok else '○'} the-odds-api.com")
-    st.markdown("✅ open-meteo.com")
-    st.markdown("✅ clubelo.com")
+    st.markdown("**Motor:**")
+    st.markdown("Poisson / Negative Binomial")
+    st.markdown("Fusión 70/30 por partidos")
+    st.markdown("Multi-temporada automático")
+    st.markdown("Ajuste climático")
+    st.markdown(f"Ventana: {DAYS_AHEAD} días")
 
 # ================================================================
-#  MAIN
+#  INTERFAZ PRINCIPAL
 # ================================================================
+
 st.markdown(f"""
 <div class="hero">
+  <div class="ver">VERSION 3.5 — EDICION DEFINITIVA</div>
   <h1>FOOTBALL ORACLE PRO</h1>
-  <div class="sub">v3.0 · Multi-API · Latam + Europa + Mundial · Sugerencias de apuesta · 45 dias</div>
-  <div class="apis">
-    {pill("football-data.org", fd_ok)}
-    {pill("api-sports.io",     as_ok)}
-    {pill("the-odds-api",      od_ok)}
-    {pill("open-meteo",        True)}
-    {pill("clubelo.com",       True)}
+  <div class="sub">
+    Monte Carlo 10,000 sims · Negative Binomial · Multi-API · Deep Data 50 partidos ·
+    Fusión Inteligente 70/30 · Value Bets · Criterio de Kelly
+  </div>
+  <div class="api-row">
+    {pill_api("football-data.org", bool(FD_KEY))}
+    {pill_api("api-sports.io",     bool(APISPORTS))}
+    {pill_api("the-odds-api",      bool(ODDS_KEY))}
+    {pill_api("open-meteo",        True)}
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-if not fd_ok and not as_ok:
-    st.warning("Necesitas al menos UNA key activa. Pegala en el sidebar (icono menu arriba).")
-    with st.expander("Como obtener las keys gratis"):
-        st.markdown("""
-**1. football-data.org** (recomendado para Europa)
-- Ve a: `football-data.org/client/register`
-- Registrate gratis → key llega al correo en minutos
-- Cubre: Premier League, La Liga, Bundesliga, Serie A, Ligue 1, UCL, Copa Libertadores
+# ── SELECTOR DE LIGA ──────────────────────────────────────────────
+seccion("① ELIGE LA LIGA")
 
-**2. api-sports.io** (ya la tienes — cubre Latam completo)
-- Tu key actual funciona para Colombia, Argentina, Brasil, Mexico y mas
+regiones = {"Latinoamerica": [], "Internacional": []}
+for nombre, info in LIGAS.items():
+    regiones[info["region"]].append(nombre)
 
-**3. the-odds-api.com** (cuotas en vivo — 500 req/mes gratis)
-- Ve a: `the-odds-api.com/#get-access`
-- Activa el Value Bet detector y el Kelly Criterion
+c1, c2 = st.columns(2)
+with c1:
+    region = st.selectbox("Region", list(regiones.keys()), label_visibility="collapsed")
+with c2:
+    nombre_liga = st.selectbox("Liga", regiones[region], label_visibility="collapsed")
 
-**4. open-meteo.com + clubelo.com** — Ya funcionan, sin registro
-        """)
+# ── SELECTOR DE PARTIDO ───────────────────────────────────────────
+seccion("② ELIGE EL PARTIDO")
+
+with st.spinner(f"Buscando partidos en los próximos {DAYS_AHEAD} días..."):
+    partidos, fuente_usada = cargar_partidos(nombre_liga)
+
+if not partidos:
+    st.warning(f"No se encontraron partidos para **{nombre_liga}** en los próximos {DAYS_AHEAD} días.")
+    lg = LIGAS[nombre_liga]
+    with st.expander("Diagnóstico de API"):
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            fut   = (datetime.now()+timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
+            r = requests.get(f"{AS_BASE}/fixtures", headers=AS_HDR,
+                             params={"league":lg["as_id"],"season":lg["season"],
+                                     "from":today,"to":fut}, timeout=12)
+            d = r.json()
+            st.code(f"HTTP {r.status_code} | results: {d.get('results',0)} | errors: {d.get('errors',{})}")
+        except Exception as e: st.error(str(e))
     st.stop()
 
-# ── STEP 1: Liga ──────────────────────────────────────────────────
-sec("① ELIGE LA LIGA")
-
-all_leagues = sorted(set(list(FD_COMPETITIONS.keys()) + list(AS_LEAGUES.keys())))
-
-# Group display
-latam = sorted([l for l in all_leagues if any(x in l for x in ["BetPlay","Profesional","Brasil","MX","CHI","PER","URU","Libertadores","Sudamericana","Copa America","CONC"])])
-europa= sorted([l for l in all_leagues if l not in latam and "World Cup" not in l and "FIFA" not in l and "Africa" not in l and "CONCACAF" not in l])
-global_= sorted([l for l in all_leagues if l not in latam and l not in europa])
-
-col1, col2 = st.columns(2)
-with col1:
-    region = st.selectbox("Region", ["Europa", "Latinoamerica", "Mundial / Selecciones"], label_visibility="collapsed")
-with col2:
-    if region == "Europa":          league_list = europa
-    elif region == "Latinoamerica": league_list = latam
-    else:                           league_list = global_
-    league_name = st.selectbox("Liga", league_list, label_visibility="collapsed")
-
-# ── STEP 2: Partido ───────────────────────────────────────────────
-sec("② ELIGE EL PARTIDO")
-with st.spinner(f"Buscando partidos en los proximos {DAYS_AHEAD} dias..."):
-    fixtures, source_used = load_fixtures_smart(league_name)
-
-if not fixtures:
-    st.warning(f"No se encontraron partidos para **{league_name}** en los proximos {DAYS_AHEAD} dias.")
-    with st.expander("Info de depuracion"):
-        lg = AS_LEAGUES.get(league_name,{})
-        if as_ok and lg:
-            try:
-                today=datetime.now().strftime("%Y-%m-%d")
-                future=(datetime.now()+timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
-                r=requests.get(f"{AS_BASE}/fixtures",headers=_as_headers(),
-                               params={"league":lg["id"],"season":lg["season"],"from":today,"to":future},timeout=12)
-                d=r.json()
-                st.code(f"HTTP {r.status_code}\nerrors: {d.get('errors')}\nresults: {d.get('results',0)}",language="json")
-            except Exception as e: st.error(str(e))
-    st.stop()
-
-st.success(f"{len(fixtures)} partido(s) encontrados — fuente: **{source_used}**")
-match_map = {f["display"]:f for f in fixtures}
-sel = st.selectbox("Partido", list(match_map.keys()), label_visibility="collapsed")
-M   = match_map[sel]
+st.success(f"{len(partidos)} partido(s) encontrado(s) — fuente: **{fuente_usada}**")
+mapa = {p["display"]: p for p in partidos}
+sel  = st.selectbox("Partido", list(mapa.keys()), label_visibility="collapsed")
+M    = mapa[sel]
 
 st.markdown(f"""
-<div class="match">
-  <span class="tn">{M['home']}</span>
-  &nbsp;&nbsp;<span class="vs">VS</span>&nbsp;&nbsp;
-  <span class="tn">{M['away']}</span>
-  <br><span style="color:#404060;font-size:.82rem">📅 {M['date']}  ·  <span class="src-tag">{M.get('source','')}</span></span>
+<div class="match-box">
+  <span class="tn">{M['local']}</span>
+  <span class="vs">VS</span>
+  <span class="tn">{M['visita']}</span>
+  <div class="match-meta">📅 {M['fecha']}  ·  <span class="src-chip">{M.get('fuente','')}</span></div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── STEP 3: Analyze ───────────────────────────────────────────────
-if st.button(f"ANALIZAR CON MONTE CARLO — 10,000 SIMULACIONES"):
-    with st.spinner("Cargando datos de todas las fuentes y simulando..."):
-        # Load stats with smart ID sync
-        data = load_team_stats_smart(M, league_name)
+# ── BOTÓN DE ANÁLISIS ─────────────────────────────────────────────
+if st.button("ANALIZAR CON MONTE CARLO — 10,000 SIMULACIONES"):
+    with st.spinner("Cargando estadísticas profundas y ejecutando simulación..."):
 
-        hp_fd = profile_from_fd(data["home"]["fd_matches"], M.get("home_id"))
-        ap_fd = profile_from_fd(data["away"]["fd_matches"], M.get("away_id"))
-        hp_as = profile_from_as_stats(data["home"]["as_stats"], is_home=True)
-        ap_as = profile_from_as_stats(data["away"]["as_stats"], is_home=False)
+        datos  = cargar_estadisticas(M, nombre_liga)
+        season = datos["season"]
 
-        # Enrich with recent fixtures
-        hp_fd = enrich_from_as_fixtures(hp_fd, data["home"]["as_fixtures"], data["home"]["id_as"]) if hp_fd else hp_fd
-        ap_fd = enrich_from_as_fixtures(ap_fd, data["away"]["as_fixtures"], data["away"]["id_as"]) if ap_fd else ap_fd
+        # Construir perfiles desde FD
+        fd_local  = perfil_de_fd(datos["local"]["hist"],  M.get("id_local_fd"))
+        fd_visita = perfil_de_fd(datos["visita"]["hist"], M.get("id_visita_fd"))
 
-        hp = merge_profiles(hp_fd, hp_as)
-        ap = merge_profiles(ap_fd, ap_as)
+        # Construir perfiles desde AS
+        as_local  = perfil_de_as(datos["local"]["stats"],  is_local=True)
+        as_visita = perfil_de_as(datos["visita"]["stats"], is_local=False)
 
-        # Odds
-        sport_key = ODDS_SPORT_MAP.get(league_name)
-        odds = get_odds(sport_key, M["home"], M["away"]) if od_ok and sport_key else None
+        # Enriquecer con últimos partidos
+        fd_local  = enriquecer_con_ultimos(fd_local,  datos["local"]["ultimos"],  datos["local"]["id_as"])  if fd_local  else fd_local
+        fd_visita = enriquecer_con_ultimos(fd_visita, datos["visita"]["ultimos"], datos["visita"]["id_as"]) if fd_visita else fd_visita
 
-        # Weather
-        coords = STADIUM_COORDS.get(league_name, (51.5,-0.1))
-        weather = get_weather(coords[0], coords[1])
+        # Fusión inteligente 70/30
+        lp = fusionar_perfiles(fd_local,  as_local)
+        vp = fusionar_perfiles(fd_visita, as_visita)
 
-        # Elo (for national team matches)
-        home_elo = get_elo(M["home"]); away_elo = get_elo(M["away"])
+        # Datos complementarios
+        sport_key = ODDS_MAP.get(nombre_liga)
+        cuotas    = obtener_cuotas(sport_key, M["local"], M["visita"]) if sport_key else None
+        coords    = COORDENADAS.get(nombre_liga, (4.71, -74.07))
+        clima     = obtener_clima(coords[0], coords[1])
 
-        # Monte Carlo
-        R     = run_mc(hp, ap, weather, home_elo, away_elo)
-        preds = build_predictions(R, M["home"], M["away"], odds)
-        bet   = generate_bet_suggestion(preds, R, odds, M["home"], M["away"], st.session_state.get("bankroll",100))
+        # Monte Carlo con varianza real
+        R     = correr_montecarlo(lp, vp, clima)
+        preds = construir_predicciones(R, M["local"], M["visita"], cuotas)
+        sug   = generar_sugerencia(preds, R, cuotas, M["local"], M["visita"],
+                                    st.session_state.get("bankroll", 100))
 
-    st.success("10,000 simulaciones completadas")
+    st.success("✅ 10,000 simulaciones completadas")
 
-    # ── DATA QUALITY REPORT ───────────────────────────────────
-    sec("CALIDAD DE DATOS")
-    c1,c2,c3 = st.columns(3)
-    with c1:
-        games_h = int(hp.get("n_games",0))
-        q_color = "#3ecf8e" if games_h>=10 else "#f5c842" if games_h>=5 else "#f4622a"
-        st.markdown(f'<div class="kpi"><div class="kpi-val" style="color:{q_color}">{games_h}</div><div class="kpi-lbl">Partidos analizados {M["home"][:12]}</div></div>', unsafe_allow_html=True)
-    with c2:
-        games_a = int(ap.get("n_games",0))
-        q_color2= "#3ecf8e" if games_a>=10 else "#f5c842" if games_a>=5 else "#f4622a"
-        st.markdown(f'<div class="kpi"><div class="kpi-val" style="color:{q_color2}">{games_a}</div><div class="kpi-lbl">Partidos analizados {M["away"][:12]}</div></div>', unsafe_allow_html=True)
-    with c3:
-        sources_active = sum([bool(get_fd_key()),bool(get_as_key()),bool(get_odds_key()),True,True])
-        st.markdown(f'<div class="kpi"><div class="kpi-val">{sources_active}/5</div><div class="kpi-lbl">Fuentes de datos activas</div></div>', unsafe_allow_html=True)
+    # ── CALIDAD DE DATOS ──────────────────────────────────────
+    seccion("CALIDAD DE DATOS")
+    c1, c2, c3 = st.columns(3)
+    p_local  = int(lp.get("partidos", 0))
+    p_visita = int(vp.get("partidos", 0))
+    fuentes  = sum([bool(FD_KEY), bool(APISPORTS), bool(ODDS_KEY), True])
 
-    col1,col2 = st.columns(2)
-    col1.markdown(f"**{M['home']}:** {hp.get('source','N/A')}")
-    col2.markdown(f"**{M['away']}:** {ap.get('source','N/A')}")
+    def color_dato(n):
+        return "#3ecf8e" if n >= 10 else "#f5c842" if n >= 5 else "#f4622a"
 
-    if games_h < 5 or games_a < 5:
-        st.warning("Datos insuficientes (< 5 partidos). Activa mas fuentes en el sidebar para mejorar la precision.")
+    c1.markdown(f'<div class="kpi"><div class="kv" style="color:{color_dato(p_local)}">{p_local}</div><div class="kl">Partidos {M["local"][:14]}</div></div>', unsafe_allow_html=True)
+    c2.markdown(f'<div class="kpi"><div class="kv" style="color:{color_dato(p_visita)}">{p_visita}</div><div class="kl">Partidos {M["visita"][:14]}</div></div>', unsafe_allow_html=True)
+    kpi(f"{fuentes}/4", "Fuentes activas", c3)
 
-    # Weather & Elo
-    if weather:
-        icon = "🌧️" if weather["rain"]>2 else "💨" if weather["wind"]>30 else "☀️" if weather["code"]<3 else "☁️"
-        st.info(f"{icon} **Clima:** {weather['cond']} | {weather['temp']}°C | Lluvia: {weather['rain']}mm | Viento: {weather['wind']}km/h — ajustado en el modelo")
+    col1, col2 = st.columns(2)
+    col1.markdown(f'**{M["local"]}:** <span class="src-chip">{lp.get("fuente","?")}</span>', unsafe_allow_html=True)
+    col2.markdown(f'**{M["visita"]}:** <span class="src-chip">{vp.get("fuente","?")}</span>', unsafe_allow_html=True)
+    st.markdown(f'**Motor MC:** {R["modelo"]} | σ local: {R["std_h"]} | σ visita: {R["std_a"]}')
 
-    if home_elo and away_elo:
-        diff = round(home_elo["elo"] - away_elo["elo"])
-        fav  = M["home"] if diff>0 else M["away"]
-        st.markdown(f'<div class="elo-box">🏆 <b>Elo Rating</b> — {M["home"]}: <b>{round(home_elo["elo"])}</b> | {M["away"]}: <b>{round(away_elo["elo"])}</b> | Diferencia: <b>{abs(diff)}</b> puntos a favor de <b>{fav}</b> (considerado en Monte Carlo)</div>', unsafe_allow_html=True)
+    if p_local < 5 or p_visita < 5:
+        st.markdown('<div class="warn-data">⚡ Pocos datos disponibles (< 5 partidos). Activa más fuentes para mayor precisión. Las predicciones se basan en promedios de liga como fallback.</div>', unsafe_allow_html=True)
+
+    if clima:
+        ico = "🌧️" if clima["lluvia"]>2 else "💨" if clima["viento"]>30 else "☀️" if clima["code"]<3 else "☁️"
+        st.info(f"{ico} **Clima:** {clima['cond']} | {clima['temp']}°C | Lluvia: {clima['lluvia']}mm | Viento: {clima['viento']}km/h — ajustado en el modelo")
 
     # ── CUOTAS EN VIVO ────────────────────────────────────────
-    if odds:
-        sec("CUOTAS EN TIEMPO REAL")
-        st.markdown(f'<div style="font-size:.75rem;color:#505070;margin-bottom:8px">Fuente: {odds.get("bookmaker","")} via the-odds-api.com</div>', unsafe_allow_html=True)
-        c1,c2,c3 = st.columns(3)
-        for col,label,key in [(c1,M["home"][:14],"odd_home"),(c2,"Empate","odd_draw"),(c3,M["away"][:14],"odd_away")]:
-            ov = odds.get(key,0)
-            kpi(f"{ov:.2f}" if ov else "N/D", f"{label}\n(impl. {implied(ov)}%)", col)
+    if cuotas:
+        seccion("CUOTAS EN TIEMPO REAL")
+        st.markdown(f'<div style="font-size:.72rem;color:#30305a;margin-bottom:10px">Fuente: {cuotas.get("casa","")} via the-odds-api.com</div>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        for col, label, key in [
+            (c1, M["local"][:14],  "cuota_local"),
+            (c2, "Empate",         "cuota_empate"),
+            (c3, M["visita"][:14], "cuota_visita"),
+        ]:
+            ov = cuotas.get(key, 0)
+            kpi(f"{ov:.2f}" if ov else "N/D", f"{label}\n(impl. {impl(ov)}%)", col)
 
-    # ── BET SUGGESTION ────────────────────────────────────────
-    sec("SUGERENCIA DE APUESTA")
-    render_bet_suggestion(bet, M["home"], M["away"], st.session_state.get("bankroll",100))
+    # ── SUGERENCIA DE APUESTA ─────────────────────────────────
+    seccion("SUGERENCIA DE APUESTA")
+    render_sugerencia(sug, st.session_state.get("bankroll", 100))
 
-    # ── PREDICCIONES ──────────────────────────────────────────
-    sec("PREDICCIONES CON NIVEL DE CONFIANZA")
-    high=[p for p in preds if p["conf"]>=80]
-    med =[p for p in preds if 60<=p["conf"]<80]
-    low =[p for p in preds if p["conf"]<60]
-    c1,c2,c3=st.columns(3)
-    kpi(str(len(high)),"Alta confianza >=80%",c1)
-    kpi(str(len(med)), "Confianza media 60-79%",c2)
-    kpi(str(len(low)), "Baja confianza <60%",c3)
-    st.markdown("<br>",unsafe_allow_html=True)
-    if high:
-        st.markdown("#### ✅ Alta confianza (>=80%)")
-        for p in high: render_pred(p)
-    if med:
-        st.markdown("#### ⚡ Confianza media (60-79%)")
-        for p in med: render_pred(p)
-    if low:
+    # ── PREDICCIONES POR CONFIANZA ────────────────────────────
+    seccion("PREDICCIONES POR NIVEL DE CONFIANZA")
+    altas = [p for p in preds if p["conf"] >= 80]
+    medias= [p for p in preds if 60 <= p["conf"] < 80]
+    bajas = [p for p in preds if p["conf"] < 60]
+
+    c1, c2, c3 = st.columns(3)
+    kpi(str(len(altas)),  "Alta ≥80% ✅",   c1)
+    kpi(str(len(medias)), "Media 60-79% ⚡", c2)
+    kpi(str(len(bajas)),  "Baja <60% ⚠️",   c3)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if altas:
+        st.markdown("#### ✅ Alta confianza (≥80%) — Estadísticamente sólidas")
+        for p in altas: render_prediccion(p)
+    if medias:
+        st.markdown("#### ⚡ Confianza media (60–79%) — Analiza antes de apostar")
+        for p in medias: render_prediccion(p)
+    if bajas:
         st.markdown("#### ⚠️ Baja confianza (<60%) — Evitar")
-        for p in low: render_pred(p)
+        for p in bajas: render_prediccion(p)
 
-    # ── 1X2 ──────────────────────────────────────────────────
-    sec("PROBABILIDADES 1X2")
-    prob_bar(f"Local: {M['home']}",  R["phw"],"#3ecf8e")
-    prob_bar("Empate",               R["pd"], "#f5c842")
-    prob_bar(f"Visita: {M['away']}", R["paw"],"#f4622a")
+    # ── PROBABILIDADES 1X2 ────────────────────────────────────
+    seccion("PROBABILIDADES 1X2")
+    barra(f"Local: {M['local']}",   R["p_local"],  "#3ecf8e")
+    barra("Empate",                  R["p_empate"], "#f5c842")
+    barra(f"Visita: {M['visita']}", R["p_visita"], "#f4622a")
 
     # ── GOLES ─────────────────────────────────────────────────
-    sec("GOLES PROYECTADOS")
-    c1,c2,c3,c4=st.columns(4)
-    kpi(R["lh"],         f"Goles esp.\n{M['home'][:12]}",c1)
-    kpi(R["la"],         f"Goles esp.\n{M['away'][:12]}",c2)
-    kpi(f"{R['o25']}%",  "Mas de 2.5 Goles",            c3)
-    kpi(f"{R['btts']}%", "Ambos Anotan BTTS",            c4)
+    seccion("GOLES PROYECTADOS")
+    c1, c2, c3, c4 = st.columns(4)
+    kpi(R["lh"],          f"Goles esp.\n{M['local'][:12]}",  c1)
+    kpi(R["la"],          f"Goles esp.\n{M['visita'][:12]}", c2)
+    kpi(f"{R['o25']}%",   "Mas de 2.5 Goles",                c3)
+    kpi(f"{R['btts']}%",  "Ambos Anotan BTTS",               c4)
 
     # ── MARCADORES ────────────────────────────────────────────
-    sec("MARCADORES MAS PROBABLES")
-    st.dataframe(pd.DataFrame(R["top"],columns=["Marcador","Prob %"])
-                 .style.background_gradient(subset=["Prob %"],cmap="Oranges")
-                 .format({"Prob %":"{:.1f}%"}),
-                 use_container_width=True, hide_index=True)
+    seccion("MARCADORES MAS PROBABLES")
+    st.dataframe(
+        pd.DataFrame(R["top"], columns=["Marcador", "Prob %"])
+          .style.background_gradient(subset=["Prob %"], cmap="Oranges")
+          .format({"Prob %": "{:.1f}%"}),
+        use_container_width=True, hide_index=True
+    )
 
     # ── CORNERS ───────────────────────────────────────────────
-    sec("CORNERS")
-    c1,c2,c3,c4=st.columns(4)
-    kpi(R["hc"],          f"Corners {M['home'][:12]}",c1)
-    kpi(R["ac"],          f"Corners {M['away'][:12]}",c2)
-    kpi(R["tc"],          "Total Corners",            c3)
-    kpi(f"{R['co85']}%",  "Mas de 8.5",               c4)
+    seccion("CORNERS")
+    c1, c2, c3, c4 = st.columns(4)
+    kpi(R["hc"],          f"Corners {M['local'][:12]}",  c1)
+    kpi(R["ac"],          f"Corners {M['visita'][:12]}", c2)
+    kpi(R["tc"],          "Total Corners",                c3)
+    kpi(f"{R['co85']}%",  "Mas de 8.5",                  c4)
 
     # ── TARJETAS ──────────────────────────────────────────────
-    sec("TARJETAS")
-    c1,c2,c3,c4=st.columns(4)
-    kpi(R["hy"], f"Amarillas {M['home'][:12]}",c1)
-    kpi(R["ay"], f"Amarillas {M['away'][:12]}",c2)
-    kpi(R["ty"], "Total Amarillas",             c3)
-    kpi(R["tr"], "Rojas Totales",               c4)
+    seccion("TARJETAS")
+    c1, c2, c3, c4 = st.columns(4)
+    kpi(R["hy"], f"Amarillas {M['local'][:12]}",  c1)
+    kpi(R["ay"], f"Amarillas {M['visita'][:12]}", c2)
+    kpi(R["ty"], "Total Amarillas",                c3)
+    kpi(R["tr"], "Rojas Totales",                  c4)
 
-    # ── FALTAS & TIROS ────────────────────────────────────────
-    sec("FALTAS Y TIROS A PUERTA")
-    c1,c2=st.columns(2)
+    # ── FALTAS Y TIROS ────────────────────────────────────────
+    seccion("FALTAS Y TIROS A PUERTA")
+    c1, c2 = st.columns(2)
     with c1:
-        st.dataframe(pd.DataFrame({"Equipo":[M["home"],M["away"],"TOTAL"],
-            "Faltas":[R["hf"],R["af"],R["tf"]]}), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame({
+            "Equipo":  [M["local"], M["visita"], "TOTAL"],
+            "Faltas":  [R["hf"],    R["af"],     R["tf"]],
+        }), use_container_width=True, hide_index=True)
     with c2:
-        st.dataframe(pd.DataFrame({"Equipo":[M["home"],M["away"]],
-            "Tiros a puerta":[R["hs"],R["as_"]]}), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame({
+            "Equipo":          [M["local"], M["visita"]],
+            "Tiros a puerta":  [R["hs"],    R["as_"]],
+        }), use_container_width=True, hide_index=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.info("Analisis estadistico educativo. Alta confianza = mayor probabilidad estadistica, NO garantia. Apuesta con responsabilidad y nunca mas de lo que puedes perder.")
+    st.info("Football Oracle PRO v3.5 — Análisis estadístico educativo. Alta confianza = mayor probabilidad estadística, NO garantía de resultado. El Criterio de Kelly es orientativo. Apuesta siempre con responsabilidad.")
